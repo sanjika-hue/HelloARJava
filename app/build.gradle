@@ -1,0 +1,39 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.google.ar.core.examples.helloar"
+    compileSdkVersion 36
+
+    defaultConfig {
+        applicationId "com.google.ar.core.examples.helloar"
+        minSdkVersion 24
+        targetSdkVersion 36
+        versionCode 1
+        versionName '1.0'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+
+    implementation 'com.google.ar:core:1.50.0'
+
+
+    implementation 'de.javagl:obj:0.4.0'
+
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    implementation 'com.google.android.material:material:1.1.0'
+
+
+}
