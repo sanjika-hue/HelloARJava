@@ -25,6 +25,26 @@
       android:background="@android:color/transparent"
       android:contentDescription="Settings" />
 
+  <Button
+      android:id="@+id/btnDone"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="Done"
+      android:layout_alignParentBottom="true"
+      android:layout_centerHorizontal="true"
+      android:layout_marginBottom="20dp"/>
+
+  <fragment
+      android:id="@+id/arFragment"
+      android:name="com.google.ar.sceneform.ux.ArFragment"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"/>
+
+
+  <GLSurfaceView
+      android:id="@+id/glSurfaceView"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"/>
 
 
 </RelativeLayout>

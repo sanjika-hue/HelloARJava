@@ -1,4 +1,5 @@
 #version 300 es
+#define NUMBER_OF_MIPMAP_LEVELS 8
 /*
  * Copyright 2017 Google LLC
  *
