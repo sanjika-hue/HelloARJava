@@ -50,7 +50,7 @@ public class SimpleRenderer implements GLSurfaceView.Renderer {
     private int aPositionLoc;
     private int uMVPMatrixLoc;
 
-    public SimpleRenderer(Context context, Session session,List<Pose> gridPoses) {
+    public SimpleRenderer(Context context, Session session) {
         this.context = context;
         this.session = session;
     }

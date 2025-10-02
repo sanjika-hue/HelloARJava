@@ -1,19 +1,13 @@
-<?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/root_layout"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    tools:context="com.google.ar.core.examples.helloar.HelloArActivity">
+    android:layout_height="match_parent">
 
-  <!-- AR Camera Preview -->
   <android.opengl.GLSurfaceView
       android:id="@+id/surfaceview"
       android:layout_width="match_parent"
-      android:layout_height="match_parent"
-      android:layout_gravity="top" />
+      android:layout_height="match_parent"/>
 
-  <!-- Settings Button -->
   <ImageButton
       android:id="@+id/settings_button"
       android:layout_width="wrap_content"
@@ -34,17 +28,13 @@
       android:layout_centerHorizontal="true"
       android:layout_marginBottom="20dp"/>
 
-  <fragment
-      android:id="@+id/arFragment"
+  <androidx.fragment.app.FragmentContainerView
+      android:id="@+id/ux_fragment"
       android:name="com.google.ar.sceneform.ux.ArFragment"
       android:layout_width="match_parent"
-      android:layout_height="match_parent"/>
+      android:layout_height="match_parent" />
 
 
-  <GLSurfaceView
-      android:id="@+id/glSurfaceView"
-      android:layout_width="match_parent"
-      android:layout_height="match_parent"/>
 
 
 </RelativeLayout>

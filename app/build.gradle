@@ -35,10 +35,17 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.1.0'
     implementation 'com.google.android.material:material:1.1.0'
 
-    //anchor
+    //attach obj
 
-    implementation 'com.google.ar.sceneform:core:1.20.0'
-    implementation 'com.google.ar.sceneform.ux:1.20.0'
+   // implementation 'com.gorisse.thomas.sceneform:filament-android:1.20.1'
+  //  implementation libs.sceneform.android
+    implementation 'com.google.ar.sceneform:core:1.15.0'
+    implementation 'com.google.ar.sceneform.ux:sceneform-ux:1.15.0'
+// AndroidX
+
+    implementation 'androidx.fragment:fragment:1.5.7'
+    //  implementation 'com.google.ar.sceneform:core:1.20.0'
+  //  implementation 'com.google.ar.sceneform.ux:1.20.0'
 
 
 

@@ -4,13 +4,6 @@ import android.content.DialogInterface;
 import android.content.res.Resources;
 import android.media.Image;
 import java.util.Arrays;
-import java.io.IOException;
-import java.io.InputStream;
-
-import de.javagl.obj.Obj;
-import de.javagl.obj.ObjReader;
-import de.javagl.obj.ObjUtils;
-
 
 import android.opengl.GLES30;
 import android.opengl.GLSurfaceView;
@@ -84,6 +77,20 @@ import com.google.ar.core.Trackable;
 
 import java.nio.FloatBuffer;
 import java.util.Collection;
+//attach obj
+import com.google.ar.sceneform.AnchorNode;
+import com.google.ar.sceneform.ux.ArFragment;
+import com.google.ar.sceneform.rendering.ModelRenderable;
+import com.google.ar.sceneform.ux.TransformableNode;
+
+import android.net.Uri;
+//attach obj
+
+
+
+
+
+
 
 
 /**
@@ -92,7 +99,6 @@ import java.util.Collection;
  * plane to place a 3D model.
  */
 public class HelloArActivity extends AppCompatActivity implements SampleRender.Renderer {
-    //private ArFragment arFragment;
 
     private static final String TAG = HelloArActivity.class.getSimpleName();
 
@@ -154,7 +160,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // camera. Use larger values for experiences where the user will likely be standing and trying to
     // place an object on the ground or floor in front of them.
     private static final float APPROXIMATE_DISTANCE_METERS = 2.0f;
-    private GLSurfaceView glSurfaceView; // add this in your activity
 
     // Point Cloud
     private boolean anchorsPlaced = false;
@@ -177,9 +182,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final List<WrappedAnchor> wrappedAnchors = new ArrayList<>();
 
     // Environmental HDR
-
-    //private TapHelper tapHelper;  // optional if you want touch input
-
     private Texture dfgTexture;
     private SpecularCubemapFilter cubemapFilter;
 
@@ -193,46 +195,19 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final float[] viewInverseMatrix = new float[16];
     private final float[] worldLightDirection = {0.0f, 0.0f, 0.0f, 0.0f};
     private final float[] viewLightDirection = new float[4]; // view x world light direction
-    private List<Anchor> anchors = new ArrayList<>();
-    private final List<Pose> gridPoses = new ArrayList<>();
-    List<float[]> gridCenters = new ArrayList<>();
+    private ArFragment arFragment;
+    private ModelRenderable pawnRenderable;
+    private List<Anchor> gridAnchors = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Log.d("DEBUG", "Step 1: onCreate called");
-        // setContentView(R.layout.activity_main);
-        surfaceView = new GLSurfaceView(this);
-        setContentView(surfaceView);
+        setContentView(R.layout.activity_main);
 
-        try {
-            session = new Session(this);
-            Config config = new Config(session);
-            config.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE);
-            session.configure(config);
-            Log.d("DEBUG", "ARCore session initialized successfully");
-        } catch (UnavailableArcoreNotInstalledException |
-                 UnavailableApkTooOldException |
-                 UnavailableSdkTooOldException |
-                 UnavailableDeviceNotCompatibleException e) {
-            e.printStackTrace();
-            Log.e("DEBUG", "ARCore not available: " + e.getMessage());
-            return; // Stop further execution if ARCore is unavailable
-        }
-        ///  arFragment = (ArFragment) getSupportFragmentManager().findFragmentById(R.id.arFragment);
-        // 2️⃣ Initialize GLSurfaceView
-        surfaceView = new GLSurfaceView(this);
-        setContentView(surfaceView);
-        surfaceView.setEGLContextClientVersion(3);
-        // surfaceView.setRenderer(new SimpleRenderer(this, session)); // You will create SampleRenderer
-        surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
-        glSurfaceView = findViewById(R.id.glSurfaceView);
-        glSurfaceView.setEGLContextClientVersion(2); // OpenGL ES 2.0
-
-        // 3️⃣ Initialize helpers
-        displayRotationHelper = new DisplayRotationHelper(this);
-        tapHelper = new TapHelper(this);
-        surfaceView.setOnTouchListener(tapHelper);
+        ArFragment arFragment = (ArFragment) getSupportFragmentManager()
+                .findFragmentById(R.id.ux_fragment);
+        loadModel();
 
 
         btnDone = findViewById(R.id.btnDone);
@@ -246,13 +221,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         surfaceView.setOnTouchListener(tapHelper);
 
         // Set up renderer.
-        //render = new SampleRender(surfaceView, this, getAssets());
-        glSurfaceView.setEGLContextClientVersion(2);
-        //surfaceView.setRenderer(new SimpleRenderer(this, session, gridPoses));
+        render = new SampleRender(surfaceView, this, getAssets());
 
-        //glSurfaceView.setRenderer(renderer);
-        SimpleRenderer renderer = new SimpleRenderer(this, session, gridPoses);
-        glSurfaceView.setRenderer(renderer);
         installRequested = false;
 
         depthSettings.onCreate(this);
@@ -269,7 +239,34 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     }
                 });
     }
+    private void loadModel() {
+        ModelRenderable.builder()
+                .setSource(this, Uri.parse("models/pawn.obj"))
+                //.setIsFilamentGltf(true) // for GLB/GLTF
+                .build()
+                .thenAccept(renderable -> pawnRenderable = renderable)
+                .exceptionally(throwable -> {
+                    Log.e("HelloAr", "Failed to load model", throwable);
+                    return null;
+                });
+    }
 
+    private void attachModelToAnchors() {
+        if (pawnRenderable == null) return;
+
+        for (WrappedAnchor wrappedAnchor : wrappedAnchors) {
+            Anchor anchor = wrappedAnchor.getAnchor();
+
+            AnchorNode anchorNode = new AnchorNode(anchor);
+            anchorNode.setParent(arFragment.getArSceneView().getScene());
+
+
+
+            TransformableNode node = new TransformableNode(arFragment.getTransformationSystem());
+            node.setRenderable(pawnRenderable);
+            node.setParent(anchorNode);
+        }
+    }
 
 
     /**
@@ -595,6 +592,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         if (floorPlane != null && !getFloorVertices().isEmpty() && !anchorsPlaced) {
             computeBoundingBox();
             placeGridAnchors();
+            attachModelToAnchors();
             anchorsPlaced = true;
         }
         //get the floor’s height
@@ -1186,7 +1184,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             minZ = Math.min(minZ, vertex[2]);
             maxZ = Math.max(maxZ, vertex[2]);
         }
-
+        Log.d("FloorGrid", "Bounding box: minX=" + minX + ", maxX=" + maxX +
+                ", minZ=" + minZ + ", maxZ=" + maxZ + ", floorY=" + floorY);
         float gridSize = 0.1f; // spacing
 
         for (float x = minX; x <= maxX; x += gridSize) {
@@ -1205,19 +1204,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 if (inside) {
                     placeAnchor(x, floorY, z);
 
-
+                    Log.d("FloorGrid", "Placed anchor at: " + Arrays.toString(point) +
+                            ", total anchors: " + wrappedAnchors.size());
 
                     // Limit anchors
                     if (wrappedAnchors.size() > 50) {
                         wrappedAnchors.get(0).getAnchor().detach();
                         wrappedAnchors.remove(0);
+                        Log.d("FloorGrid", "Removed oldest anchor to maintain limit");
                     }
                 }
             }
-        }
-        for (float[] center : gridCenters) {
-            Pose pose = Pose.makeTranslation(center[0], center[1], center[2]);
-            gridPoses.add(pose);  // gridPoses is a member variable of the activity
         }
 
         showToastOnUiThread("Grid anchors placed: " + wrappedAnchors.size());
@@ -1244,7 +1241,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // private final List<Anchor> anchors = new ArrayList<>();
 
-    // private final List<Anchor> anchors = new ArrayList<>();
+    private final List<Anchor> anchors = new ArrayList<>();
 
     private void placeAnchor(float x, float y, float z) {
         if (session == null) {
