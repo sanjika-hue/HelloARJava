@@ -86,6 +86,12 @@ import com.google.ar.sceneform.ux.TransformableNode;
 import android.net.Uri;
 //attach obj
 
+import com.google.ar.sceneform.math.Vector3;
+import com.gorisse.thomas.sceneform.rendering.ModelRenderable;
+import com.gorisse.thomas.sceneform.rendering.RenderableSource;
+import com.gorisse.thomas.sceneform.ux.ArFragment;
+import com.gorisse.thomas.sceneform.ux.TransformableNode;
+
 
 
 
@@ -197,6 +203,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final float[] viewLightDirection = new float[4]; // view x world light direction
     private ArFragment arFragment;
     private ModelRenderable pawnRenderable;
+    private boolean isPawnLoaded = false;
+
     private List<Anchor> gridAnchors = new ArrayList<>();
 
     @Override
@@ -207,7 +215,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         ArFragment arFragment = (ArFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.ux_fragment);
-        loadModel();
+       loadModel();
 
 
         btnDone = findViewById(R.id.btnDone);
@@ -238,21 +246,56 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         popup.show();
                     }
                 });
-    }
-    private void loadModel() {
-        ModelRenderable.builder()
-                .setSource(this, Uri.parse("models/pawn.obj"))
-                //.setIsFilamentGltf(true) // for GLB/GLTF
-                .build()
-                .thenAccept(renderable -> pawnRenderable = renderable)
-                .exceptionally(throwable -> {
-                    Log.e("HelloAr", "Failed to load model", throwable);
-                    return null;
-                });
+
     }
 
+
+
+
+    private void loadModel() {
+        Log.d("hr", "Starting to load pawn model...");
+
+        // Tell Sceneform we’re loading a GLB from assets
+        RenderableSource source = RenderableSource.builder()
+                .setSource(this,
+                        Uri.parse("file:///android_asset/models/pawn.glb"),
+                        RenderableSource.SourceType.GLB)
+                .setRecenterMode(RenderableSource.RecenterMode.ROOT)
+                .build();
+
+        ModelRenderable.builder()
+                .setSource(this, source)     // use RenderableSource, not Uri.parse directly
+                .setRegistryId("pawn")       // cache key
+                .build()
+                .thenAccept(renderable -> {
+                    Log.d("hr", "Inside thenAccept - model loaded callback");
+
+                    pawnRenderable = renderable;
+                    isPawnLoaded = true;
+                    Log.d("hr", "Pawn model loaded successfully");
+
+                    // Attach to anchors if any are already placed
+                    if (!wrappedAnchors.isEmpty()) {
+                        Log.d("hr", "Attaching model to existing anchors");
+                        attachModelToAnchors();
+                    }
+                })
+                .exceptionally(throwable -> {
+                    Log.e("hr", "Unable to load pawn model", throwable);
+                    return null;
+                });
+
+        Log.d("hr", "ModelRenderable.builder() call finished");
+    }
+
+
+
+    // Attach model to all existing anchors
     private void attachModelToAnchors() {
-        if (pawnRenderable == null) return;
+        if (!isPawnLoaded || pawnRenderable == null) {
+            Log.e("hr", "Model not loaded yet!");
+            return; // wait until the model is ready
+        }
 
         for (WrappedAnchor wrappedAnchor : wrappedAnchors) {
             Anchor anchor = wrappedAnchor.getAnchor();
@@ -260,13 +303,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             AnchorNode anchorNode = new AnchorNode(anchor);
             anchorNode.setParent(arFragment.getArSceneView().getScene());
 
-
-
             TransformableNode node = new TransformableNode(arFragment.getTransformationSystem());
-            node.setRenderable(pawnRenderable);
             node.setParent(anchorNode);
+            node.setRenderable(pawnRenderable);
+            node.select();
         }
     }
+
+
 
 
     /**
