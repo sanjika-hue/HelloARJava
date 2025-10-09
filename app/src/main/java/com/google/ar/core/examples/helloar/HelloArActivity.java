@@ -90,12 +90,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private GLSurfaceView surfaceView;
     private boolean installRequested;
     private Session session;
+    private SampleRender render;
     private Mesh gridQuadMesh;
     private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
     private DisplayRotationHelper displayRotationHelper;
     private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
     private TapHelper tapHelper;
-    private SampleRender render;
+//    private SampleRender render;
     private Button btnDone;
 
     private PlaneRenderer planeRenderer;
@@ -106,6 +107,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private final DepthSettings depthSettings = new DepthSettings();
     private boolean[] depthSettingsMenuDialogCheckboxes = new boolean[2];
+    private boolean shouldCreateGrid = false;
 
     private final InstantPlacementSettings instantPlacementSettings = new InstantPlacementSettings();
     private boolean[] instantPlacementSettingsMenuDialogCheckboxes = new boolean[1];
@@ -203,12 +205,60 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private void onDoneClicked() {
         if (cornerAnchors.size() == 4 && !gridCreated) {
-            createGrid();
-            gridCreated = true;
-            updateInstructions();
+            shouldCreateGrid = true; // Set flag instead of creating immediately
+            btnDone.setEnabled(false);
         }
     }
 
+    private void createGridOnGLThread(SampleRender render) {
+        if (cornerAnchors.size() != 4) {
+            showToastOnUiThread("Need exactly 4 corner anchors");
+            return;
+        }
+
+        float[] p1 = cornerAnchors.get(0).getAnchor().getPose().getTranslation();
+        float[] p2 = cornerAnchors.get(1).getAnchor().getPose().getTranslation();
+        float[] p3 = cornerAnchors.get(2).getAnchor().getPose().getTranslation();
+        float[] p4 = cornerAnchors.get(3).getAnchor().getPose().getTranslation();
+
+        int cellNumber = 1;
+
+        for (int row = 0; row < GRID_ROWS; row++) {
+            float rowFraction = (row + 0.5f) / GRID_ROWS;
+
+            float[] left = new float[3];
+            float[] right = new float[3];
+            for (int i = 0; i < 3; i++) {
+                left[i] = p1[i] + (p3[i] - p1[i]) * rowFraction;
+                right[i] = p2[i] + (p4[i] - p2[i]) * rowFraction;
+            }
+
+            for (int col = 0; col < GRID_COLS; col++) {
+                float colFraction = (col + 0.5f) / GRID_COLS;
+
+                float[] pos = new float[3];
+                for (int i = 0; i < 3; i++) {
+                    pos[i] = left[i] + (right[i] - left[i]) * colFraction;
+                }
+
+                try {
+                    Pose pose = Pose.makeTranslation(pos[0], pos[1], pos[2]);
+                    Anchor anchor = session.createAnchor(pose);
+                    gridCells.add(new GridCell(cellNumber, row, col, anchor));
+                    cellNumber++;
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to create grid cell: " + e.getMessage());
+                }
+            }
+        }
+
+        // Create meshes on GL thread
+        createGridLineMeshes(render);
+        createCornerConnectionLines(render);
+
+        showToastOnUiThread("Grid created with " + gridCells.size() + " cells");
+        Log.d(TAG, "Grid created successfully on GL thread");
+    }
     private void createGrid() {
         if (cornerAnchors.size() != 4) {
             showToastOnUiThread("Need exactly 4 corner anchors");
@@ -254,12 +304,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }
 
+        // Create grid line meshes
+        createGridLineMeshes(render);
 
-        //createGridLineMeshes(render);
+        // Create corner connection lines
         createCornerConnectionLines(render);
 
         showToastOnUiThread("Grid created with " + gridCells.size() + " cells");
-
     }
 
     private void handleTapForCornerPlacement(Frame frame, Camera camera) {
@@ -595,7 +646,72 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
     }
 
+    private void createGridLineMeshes(SampleRender render) {
+        // Clear old meshes first
+        for (Mesh mesh : gridLineMeshes) {
+            try {
+                mesh.close();
+            } catch (Exception e) {
+                Log.e(TAG, "Error closing mesh: " + e.getMessage());
+            }
+        }
+        gridLineMeshes.clear();
+
+        if (cornerAnchors.size() != 4) return;
+
+        float[] p1 = cornerAnchors.get(0).getAnchor().getPose().getTranslation();
+        float[] p2 = cornerAnchors.get(1).getAnchor().getPose().getTranslation();
+        float[] p3 = cornerAnchors.get(2).getAnchor().getPose().getTranslation();
+        float[] p4 = cornerAnchors.get(3).getAnchor().getPose().getTranslation();
+
+        // Create horizontal lines (rows)
+        for (int row = 0; row <= GRID_ROWS; row++) {
+            float rowFraction = (float) row / GRID_ROWS;
+
+            float[] left = new float[3];
+            float[] right = new float[3];
+            for (int i = 0; i < 3; i++) {
+                left[i] = p1[i] + (p3[i] - p1[i]) * rowFraction;
+                right[i] = p2[i] + (p4[i] - p2[i]) * rowFraction;
+            }
+
+            createLineMesh(left, right, render);
+        }
+
+        // Create vertical lines (columns)
+        for (int col = 0; col <= GRID_COLS; col++) {
+            float colFraction = (float) col / GRID_COLS;
+
+            float[] top = new float[3];
+            float[] bottom = new float[3];
+            for (int i = 0; i < 3; i++) {
+                top[i] = p1[i] + (p2[i] - p1[i]) * colFraction;
+                bottom[i] = p3[i] + (p4[i] - p3[i]) * colFraction;
+            }
+
+            createLineMesh(top, bottom, render);
+        }
+
+        Log.d(TAG, "Created " + gridLineMeshes.size() + " grid line meshes");
+    }
+
+    private void createLineMesh(float[] start, float[] end, SampleRender render) {
+        float[] lineVertices = {start[0], start[1], start[2], end[0], end[1], end[2]};
+
+        FloatBuffer vertexBuffer = ByteBuffer
+                .allocateDirect(lineVertices.length * Float.BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer();
+        vertexBuffer.put(lineVertices);
+        vertexBuffer.position(0);
+
+        VertexBuffer vb = new VertexBuffer(render, 3, vertexBuffer);
+        Mesh lineMesh = new Mesh(render, Mesh.PrimitiveMode.LINES, null, new VertexBuffer[]{vb});
+        gridLineMeshes.add(lineMesh);
+    }
     public void onSurfaceCreated(SampleRender render) {
+        this.render = render; // Store the render instance
+
         try {
             // Existing renderers and framebuffers
             planeRenderer = new PlaneRenderer(render);
@@ -698,18 +814,24 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         Camera camera = frame.getCamera();
+
+        // *** ADD THIS: Create grid on GL thread when flag is set ***
+        if (shouldCreateGrid && !gridCreated) {
+            createGridOnGLThread(render);
+            shouldCreateGrid = false;
+            gridCreated = true;
+            updateInstructions();
+        }
+
         // Handle taps to place corner anchors
         if (cornerAnchors.size() < 4) {
             handleTapForCornerPlacement(frame, camera);
         }
 
-// Calculate distance to target cell if grid is created
+        // Calculate distance to target cell if grid is created
         if (gridCreated) {
             calculateDistanceToTargetCell(camera);
         }
-
-        // Detect floor and place grid anchors automatically (ONE TIME)
-        // float floorY = Float.MAX_VALUE; // Default value since we don't auto-detect floor anymore
 
         try {
             backgroundRenderer.setUseDepthVisualization(render, depthSettings.depthColorVisualizationEnabled());
@@ -767,9 +889,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             pointCloudShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
             render.draw(pointCloudMesh, pointCloudShader);
         }
+
         Plane floorPlane = findFloorPlane();
         float floorY = (floorPlane != null) ? floorPlane.getCenterPose().ty() : Float.MAX_VALUE;
-
 
         List<Plane> filteredPlanes = new ArrayList<>();
         for (Plane plane : session.getAllTrackables(Plane.class)) {
@@ -787,38 +909,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f);
 
-        // Draw pawn objects at each anchor position
+        // Draw pawn objects at each corner anchor position
         for (WrappedAnchor wrappedAnchor : cornerAnchors) {
             drawAnchor(wrappedAnchor.getAnchor(), render);
         }
 
-// Draw grid cell anchors
-     /*   for (GridCell cell : gridCells) {
-            drawAnchor(cell.anchor, render);
-        }*/
+        // Draw grid cell planes
         for (GridCell cell : gridCells) {
             drawGridCellPlane(cell, render);
         }
 
-
-
+        // Draw the virtual scene ONCE
         backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
-        // Draw grid cell anchors
+
+        // Draw grid cell anchors (after virtual scene)
         for (GridCell cell : gridCells) {
             drawAnchor(cell.anchor, render);
         }
 
-// DRAW GRID LINES
-        if (gridCreated && !gridLineMeshes.isEmpty()) {
-            Matrix.setIdentityM(modelMatrix, 0);
-            Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
-            lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
-
-            for (Mesh lineMesh : gridLineMeshes) {
-                render.draw(lineMesh, lineShader);
-            }
-        }
-        // DRAW GRID LINES
+        // Draw grid lines
         if (gridCreated && !gridLineMeshes.isEmpty()) {
             Matrix.setIdentityM(modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
@@ -829,8 +938,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }
 
-// ADD THIS SECTION:
-// DRAW CORNER CONNECTION LINES
+        // Draw corner connection lines
         if (!cornerLineMeshes.isEmpty()) {
             Log.d("CornerLine", "Drawing corner lines...");
             Matrix.setIdentityM(modelMatrix, 0);
@@ -841,8 +949,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 render.draw(lineMesh, lineShader);
             }
         }
-
-        backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
     }
 
     // Find the lowest upward-facing horizontal plane = floor candidate
