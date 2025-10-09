@@ -139,8 +139,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final List<GridCell> gridCells = new ArrayList<>();
 
     // Grid state tracking
-    private static final int GRID_ROWS = 8;
-    private static final int GRID_COLS = 8;
+    private static final int GRID_ROWS = 4;
+    private static final int GRID_COLS = 4;
     private int currentTargetCell = 1;
     private boolean gridCreated = false;
 
@@ -153,7 +153,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final float[] viewInverseMatrix = new float[16];
     private final float[] worldLightDirection = {0.0f, 0.0f, 0.0f, 0.0f};
     private final float[] viewLightDirection = new float[4];
-
+    private final HashMap<Integer, Texture> numberTextures = new HashMap<>();
+    private Mesh numberQuadMesh;
+    private Shader numberShader;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -187,7 +189,130 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         });
         updateInstructions();
     }
+    private Texture createNumberTexture(SampleRender render, int number) {
+        Log.d(TAG, "Creating texture for number: " + number);
 
+        int size = 256;
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
+
+        // Fill with solid color (different for each number to test)
+        int[] colors = {
+                android.graphics.Color.RED,
+                android.graphics.Color.GREEN,
+                android.graphics.Color.BLUE,
+                android.graphics.Color.YELLOW,
+                android.graphics.Color.CYAN,
+                android.graphics.Color.MAGENTA,
+                android.graphics.Color.WHITE
+        };
+        canvas.drawColor(colors[number % colors.length]);
+
+        // Draw LARGE text
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setColor(android.graphics.Color.BLACK);
+        paint.setTextSize(150);
+        paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+        paint.setAntiAlias(true);
+        paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+
+        String text = String.valueOf(number);
+        float x = size / 2f;
+        float y = size / 2f - ((paint.descent() + paint.ascent()) / 2);
+        canvas.drawText(text, x, y, paint);
+
+        Texture texture = Texture.createFromBitmap(render, bitmap, Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.LINEAR);
+        bitmap.recycle();
+
+        Log.d(TAG, "Texture created successfully for number: " + number);
+        return texture;
+    }
+//    private Texture createNumberTexture(SampleRender render, int number) {
+//        Log.d(TAG, "Creating texture for number: " + number);
+//
+//        // Create a bitmap with the number
+//        int size = 256;
+//        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888);
+//        android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
+//
+//        // Clear background (transparent)
+//        canvas.drawColor(android.graphics.Color.TRANSPARENT);
+//
+//        // Setup paint for text
+//        android.graphics.Paint paint = new android.graphics.Paint();
+//        paint.setColor(android.graphics.Color.BLACK);
+//        paint.setTextSize(120);
+//        paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+//        paint.setAntiAlias(true);
+//        paint.setTypeface(android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD));
+//
+//        // Draw white background circle
+//        android.graphics.Paint bgPaint = new android.graphics.Paint();
+//        bgPaint.setColor(android.graphics.Color.WHITE);
+//        bgPaint.setStyle(android.graphics.Paint.Style.FILL);
+//        bgPaint.setAntiAlias(true);
+//        canvas.drawCircle(size / 2f, size / 2f, size / 2.5f, bgPaint);
+//
+//        // Draw black border
+//        android.graphics.Paint borderPaint = new android.graphics.Paint();
+//        borderPaint.setColor(android.graphics.Color.BLACK);
+//        borderPaint.setStyle(android.graphics.Paint.Style.STROKE);
+//        borderPaint.setStrokeWidth(6);
+//        borderPaint.setAntiAlias(true);
+//        canvas.drawCircle(size / 2f, size / 2f, size / 2.5f, borderPaint);
+//
+//        // Draw number text
+//        String text = String.valueOf(number);
+//        float x = size / 2f;
+//        float y = size / 2f - ((paint.descent() + paint.ascent()) / 2);
+//        canvas.drawText(text, x, y, paint);
+//
+//        Log.d(TAG, "Bitmap created, converting to texture");
+//
+//        // Convert bitmap to texture
+//        Texture texture = Texture.createFromBitmap(render, bitmap, Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.LINEAR);
+//
+//        // Recycle bitmap after creating texture
+//        bitmap.recycle();
+//
+//        Log.d(TAG, "Texture created successfully for number: " + number);
+//        return texture;
+//    }
+    private void createNumberQuadMesh(SampleRender render) {
+        // Create a simple quad for rendering numbers
+        float[] vertices = {
+                -0.5f, 0, -0.5f,  // bottom-left
+                0.5f, 0, -0.5f,  // bottom-right
+                -0.5f, 0,  0.5f,  // top-left
+                0.5f, 0,  0.5f   // top-right
+        };
+
+        float[] uvs = {
+                0, 1,  // bottom-left
+                1, 1,  // bottom-right
+                0, 0,  // top-left
+                1, 0   // top-right
+        };
+
+        FloatBuffer vertexBuffer = ByteBuffer.allocateDirect(vertices.length * Float.BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer();
+        vertexBuffer.put(vertices);
+        vertexBuffer.rewind();
+
+        FloatBuffer uvBuffer = ByteBuffer.allocateDirect(uvs.length * Float.BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer();
+        uvBuffer.put(uvs);
+        uvBuffer.rewind();
+
+        VertexBuffer[] vertexBuffers = {
+                new VertexBuffer(render, 3, vertexBuffer),
+                new VertexBuffer(render, 2, uvBuffer)
+        };
+
+        numberQuadMesh = new Mesh(render, Mesh.PrimitiveMode.TRIANGLE_STRIP, null, vertexBuffers);
+    }
     private void updateInstructions() {
         runOnUiThread(() -> {
             if (cornerAnchors.size() < 4) {
@@ -203,13 +328,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         });
     }
 
+
     private void onDoneClicked() {
         if (cornerAnchors.size() == 4 && !gridCreated) {
             shouldCreateGrid = true; // Set flag instead of creating immediately
             btnDone.setEnabled(false);
         }
     }
-
     private void createGridOnGLThread(SampleRender render) {
         if (cornerAnchors.size() != 4) {
             showToastOnUiThread("Need exactly 4 corner anchors");
@@ -222,6 +347,26 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         float[] p4 = cornerAnchors.get(3).getAnchor().getPose().getTranslation();
 
         int cellNumber = 1;
+
+        // Define distinct colors for each cell
+        float[][] colors = {
+                {1.0f, 0.0f, 0.0f, 0.8f},  // Red
+                {0.0f, 1.0f, 0.0f, 0.8f},  // Green
+                {0.0f, 0.0f, 1.0f, 0.8f},  // Blue
+                {1.0f, 1.0f, 0.0f, 0.8f},  // Yellow
+                {1.0f, 0.0f, 1.0f, 0.8f},  // Magenta
+                {0.0f, 1.0f, 1.0f, 0.8f},  // Cyan
+                {1.0f, 0.5f, 0.0f, 0.8f},  // Orange
+                {0.5f, 0.0f, 1.0f, 0.8f},  // Purple
+                {0.0f, 1.0f, 0.5f, 0.8f},  // Spring Green
+                {1.0f, 0.0f, 0.5f, 0.8f},  // Pink
+                {0.5f, 1.0f, 0.0f, 0.8f},  // Lime
+                {0.0f, 0.5f, 1.0f, 0.8f},  // Sky Blue
+                {1.0f, 1.0f, 1.0f, 0.8f},  // White
+                {0.5f, 0.5f, 0.5f, 0.8f},  // Gray
+                {0.8f, 0.4f, 0.2f, 0.8f},  // Brown
+                {0.2f, 0.8f, 0.4f, 0.8f}   // Sea Green
+        };
 
         for (int row = 0; row < GRID_ROWS; row++) {
             float rowFraction = (row + 0.5f) / GRID_ROWS;
@@ -242,9 +387,28 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
 
                 try {
-                    Pose pose = Pose.makeTranslation(pos[0], pos[1], pos[2]);
-                    Anchor anchor = session.createAnchor(pose);
-                    gridCells.add(new GridCell(cellNumber, row, col, anchor));
+                    // Create grid cell anchor
+                    Pose cellPose = Pose.makeTranslation(pos[0], pos[1], pos[2]);
+                    Anchor cellAnchor = session.createAnchor(cellPose);
+
+                    // Create number anchor ABOVE the cell
+                    Pose numberPose = Pose.makeTranslation(pos[0], pos[1] + 0.15f, pos[2]);
+                    Anchor numberAnchor = session.createAnchor(numberPose);
+
+                    GridCell cell = new GridCell(cellNumber, row, col, cellAnchor);
+                    cell.numberAnchor = numberAnchor;
+
+                    // ASSIGN UNIQUE COLOR TO EACH CELL
+                    cell.color = colors[(cellNumber - 1) % colors.length];
+
+                    gridCells.add(cell);
+
+                    // CREATE NUMBER TEXTURE FOR THIS CELL
+                    numberTextures.put(cellNumber, createNumberTexture(render, cellNumber));
+
+                    Log.d(TAG, "Created cell " + cellNumber + " with color: " +
+                            java.util.Arrays.toString(cell.color));
+
                     cellNumber++;
                 } catch (Exception e) {
                     Log.e(TAG, "Failed to create grid cell: " + e.getMessage());
@@ -252,13 +416,78 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }
 
-        // Create meshes on GL thread
         createGridLineMeshes(render);
         createCornerConnectionLines(render);
 
         showToastOnUiThread("Grid created with " + gridCells.size() + " cells");
-        Log.d(TAG, "Grid created successfully on GL thread");
+        Log.d(TAG, "Grid created successfully on GL thread with colored cells");
     }
+
+    private void drawGridCellNumber(GridCell cell, Camera camera, SampleRender render) {
+        if (cell.numberAnchor == null || cell.numberAnchor.getTrackingState() != TrackingState.TRACKING) {
+            return;
+        }
+
+        Texture numberTexture = numberTextures.get(cell.cellNumber);
+        if (numberTexture == null) return;
+
+        // Get the anchor's position
+        float[] anchorMatrix = new float[16];
+        cell.numberAnchor.getPose().toMatrix(anchorMatrix, 0);
+
+        // Extract anchor position
+        float anchorX = anchorMatrix[12];
+        float anchorY = anchorMatrix[13];
+        float anchorZ = anchorMatrix[14];
+
+        // Get camera position
+        float[] cameraPos = camera.getPose().getTranslation();
+
+        // Calculate direction from anchor to camera (for billboard effect)
+        float dx = cameraPos[0] - anchorX;
+        float dy = 0; // Keep billboard upright, don't tilt up/down
+        float dz = cameraPos[2] - anchorZ;
+
+        // Normalize direction
+        float length = (float) Math.sqrt(dx * dx + dz * dz);
+        if (length > 0.001f) {
+            dx /= length;
+            dz /= length;
+        }
+
+        // Calculate rotation angle to face camera
+        float angle = (float) Math.atan2(dx, dz);
+
+        // Create billboard transformation matrix
+        float[] modelMatrix = new float[16];
+        Matrix.setIdentityM(modelMatrix, 0);
+
+        // Position at anchor
+        Matrix.translateM(modelMatrix, 0, anchorX, anchorY, anchorZ);
+
+        // Rotate to face camera
+        Matrix.rotateM(modelMatrix, 0, (float) Math.toDegrees(angle), 0, 1, 0);
+
+        // Scale the billboard
+        float scale = 0.15f; // Adjust size as needed
+        Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
+
+        // Compute ModelViewProjection
+        float[] modelViewMatrix = new float[16];
+        float[] modelViewProjectionMatrix = new float[16];
+        Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0);
+        Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0);
+
+        // Set shader uniforms
+        numberShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+        numberShader.setTexture("u_Texture", numberTexture);
+
+        // Draw the billboard
+        render.draw(numberQuadMesh, numberShader);
+    }
+
+
+
     private void createGrid() {
         if (cornerAnchors.size() != 4) {
             showToastOnUiThread("Need exactly 4 corner anchors");
@@ -458,8 +687,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void drawGridCellPlane(GridCell cell, SampleRender render) {
         if (cell.anchor.getTrackingState() != TrackingState.TRACKING) return;
 
-        Log.d("GridDebug", "Cell " + cell.cellNumber + " color: " + Arrays.toString(cell.color));
-
         // Get anchor model matrix
         float[] modelMatrix = new float[16];
         cell.anchor.getPose().toMatrix(modelMatrix, 0);
@@ -467,8 +694,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         // Scale the plane to the size of the grid cell
         float[] scaleMatrix = new float[16];
         Matrix.setIdentityM(scaleMatrix, 0);
-        float cellSize = 0.25f; // adjust for your grid
-        Matrix.scaleM(scaleMatrix, 0, cellSize, 0.01f, cellSize);
+        float cellSize = 0.4f; // Larger cells
+        Matrix.scaleM(scaleMatrix, 0, cellSize, 0.02f, cellSize);
 
         float[] modelScaleMatrix = new float[16];
         Matrix.multiplyMM(modelScaleMatrix, 0, modelMatrix, 0, scaleMatrix, 0);
@@ -479,18 +706,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelScaleMatrix, 0);
         Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0);
 
-        // **Use the shader before setting uniforms**
-
+        // Set shader uniforms
         gridShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
         gridShader.setVec4("u_Color", cell.color);
 
-        // Draw the grid quad
-        render.draw(gridQuadMesh, gridShader, virtualSceneFramebuffer);
-
-        Log.d("GridDebug", "Drawing cell at: " + Arrays.toString(modelMatrix));
+        // Draw DIRECTLY to screen (no framebuffer)
+        render.draw(gridQuadMesh, gridShader);
     }
-
-
     private void drawAnchor(Anchor anchor, SampleRender render) {
         if (anchor.getTrackingState() != TrackingState.TRACKING) return;
 
@@ -718,6 +940,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             backgroundRenderer = new BackgroundRenderer(render);
             virtualSceneFramebuffer = new Framebuffer(render, 1, 1);
             createGridQuadMesh(render);
+//            GRID NUMBER MESH
+            createNumberQuadMesh(render);  // ADD THIS LINE
+
 
             cubemapFilter = new SpecularCubemapFilter(render, CUBEMAP_RESOLUTION, CUBEMAP_NUMBER_OF_IMPORTANCE_SAMPLES);
 
@@ -736,6 +961,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             GLError.maybeThrowGLException("Failed to bind DFG texture", "glBindTexture");
             GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG16F, dfgResolution, dfgResolution, 0, GLES30.GL_RG, GLES30.GL_HALF_FLOAT, buffer);
             GLError.maybeThrowGLException("Failed to populate DFG texture", "glTexImage2D");
+
+//           FOR NUMBERS
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+            GLES30.glDepthFunc(GLES30.GL_LEQUAL);
+            GLES30.glEnable(GLES30.GL_BLEND);
+            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
 
             // Point cloud shader
             pointCloudShader = Shader.createFromAssets(render, "shaders/point_cloud.vert", "shaders/point_cloud.frag", null)
@@ -773,6 +1004,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     render,
                     "shaders/line.vert",   // Your vertex shader for lines
                     "shaders/line.frag",   // Your fragment shader for lines
+                    null
+            );
+            // ADD NUMBER SHADER
+            numberShader = Shader.createFromAssets(
+                    render,
+                    "shaders/number.vert",
+                    "shaders/number.frag",
                     null
             );
 
@@ -914,13 +1152,28 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             drawAnchor(wrappedAnchor.getAnchor(), render);
         }
 
-        // Draw grid cell planes
-        for (GridCell cell : gridCells) {
-            drawGridCellPlane(cell, render);
-        }
+//        // Draw grid cell planes
+//        for (GridCell cell : gridCells) {
+//            drawGridCellPlane(cell, render);
+//        }
+
+
 
         // Draw the virtual scene ONCE
         backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
+
+        // *** NOW DRAW GRID CELLS DIRECTLY TO SCREEN - AFTER VIRTUAL SCENE ***
+        // *** NOW DRAW GRID CELLS DIRECTLY TO SCREEN - AFTER VIRTUAL SCENE ***
+        if (gridCreated && !gridCells.isEmpty()) {
+            // Enable blending for transparency
+            GLES30.glEnable(GLES30.GL_BLEND);
+            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+
+            Log.d(TAG, "Drawing " + gridCells.size() + " colored grid cells");
+            for (GridCell cell : gridCells) {
+                drawGridCellPlane(cell, render);
+            }
+        }
 
         // Draw grid cell anchors (after virtual scene)
         for (GridCell cell : gridCells) {
@@ -940,13 +1193,20 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         // Draw corner connection lines
         if (!cornerLineMeshes.isEmpty()) {
-            Log.d("CornerLine", "Drawing corner lines...");
             Matrix.setIdentityM(modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
             lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
 
             for (Mesh lineMesh : cornerLineMeshes) {
                 render.draw(lineMesh, lineShader);
+            }
+        }
+
+        // Draw numbers last
+        if (gridCreated && !gridCells.isEmpty()) {
+            Log.d(TAG, "Drawing " + gridCells.size() + " cell numbers");
+            for (GridCell cell : gridCells) {
+                drawGridCellNumber(cell, camera, render);
             }
         }
     }
@@ -1114,16 +1374,18 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         public final int row;
         public final int col;
         public final Anchor anchor;
-        public boolean visited;   // Track if this cell has been visited
-        public float[] color;     // RGBA color for rendering
+        public Anchor numberAnchor;  // ADD THIS - separate anchor for the number
+        public boolean visited;
+        public float[] color;
 
         public GridCell(int cellNumber, int row, int col, Anchor anchor) {
             this.cellNumber = cellNumber;
             this.row = row;
             this.col = col;
             this.anchor = anchor;
-            this.visited = false;              // Default: not visited
-            this.color = new float[]{1f, 1f, 1f, 0.3f}; // Default: white + semi-transparent
+            this.numberAnchor = null;  // Will be set after creation
+            this.visited = false;
+            this.color = new float[]{1f, 1f, 1f, 0.3f};
         }
     }
 }

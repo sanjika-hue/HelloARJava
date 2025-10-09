@@ -34,7 +34,7 @@ public class Texture implements Closeable {
   /**
    * Describes the way the texture's edges are rendered.
    *
-   * @see <a
+   * @see
    *     href="https://www.khronos.org/registry/OpenGL-Refpages/es3.0/html/glTexParameter.xhtml">GL_TEXTURE_WRAP_S</a>.
    */
   public enum WrapMode {
@@ -53,7 +53,7 @@ public class Texture implements Closeable {
   /**
    * Describes the target this texture is bound to.
    *
-   * @see <a
+   * @see
    *     href="https://www.khronos.org/registry/OpenGL-Refpages/es3.0/html/glBindTexture.xhtml">glBindTexture</a>.
    */
   public enum Target {
@@ -71,7 +71,7 @@ public class Texture implements Closeable {
   /**
    * Describes the color format of the texture.
    *
-   * @see <a
+   * @see
    *     href="https://www.khronos.org/registry/OpenGL-Refpages/es3.0/html/glTexImage2D.xhtml">glTexImage2d</a>.
    */
   public enum ColorFormat {
@@ -124,8 +124,8 @@ public class Texture implements Closeable {
 
   /** Create a texture from the given asset file name. */
   public static Texture createFromAsset(
-      SampleRender render, String assetFileName, WrapMode wrapMode, ColorFormat colorFormat)
-      throws IOException {
+          SampleRender render, String assetFileName, WrapMode wrapMode, ColorFormat colorFormat)
+          throws IOException {
     Texture texture = new Texture(render, Target.TEXTURE_2D, wrapMode);
     Bitmap bitmap = null;
     try {
@@ -135,9 +135,9 @@ public class Texture implements Closeable {
       // Load and convert the bitmap and copy its contents to a direct ByteBuffer. Despite its name,
       // the ARGB_8888 config is actually stored in RGBA order.
       bitmap =
-          convertBitmapToConfig(
-              BitmapFactory.decodeStream(render.getAssets().open(assetFileName)),
-              Bitmap.Config.ARGB_8888);
+              convertBitmapToConfig(
+                      BitmapFactory.decodeStream(render.getAssets().open(assetFileName)),
+                      Bitmap.Config.ARGB_8888);
       ByteBuffer buffer = ByteBuffer.allocateDirect(bitmap.getByteCount());
       bitmap.copyPixelsToBuffer(buffer);
       buffer.rewind();
@@ -145,15 +145,15 @@ public class Texture implements Closeable {
       GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture.getTextureId());
       GLError.maybeThrowGLException("Failed to bind texture", "glBindTexture");
       GLES30.glTexImage2D(
-          GLES30.GL_TEXTURE_2D,
-          /*level=*/ 0,
-          colorFormat.glesEnum,
-          bitmap.getWidth(),
-          bitmap.getHeight(),
-          /*border=*/ 0,
-          GLES30.GL_RGBA,
-          GLES30.GL_UNSIGNED_BYTE,
-          buffer);
+              GLES30.GL_TEXTURE_2D,
+              /*level=*/ 0,
+              colorFormat.glesEnum,
+              bitmap.getWidth(),
+              bitmap.getHeight(),
+              /*border=*/ 0,
+              GLES30.GL_RGBA,
+              GLES30.GL_UNSIGNED_BYTE,
+              buffer);
       GLError.maybeThrowGLException("Failed to populate texture data", "glTexImage2D");
       GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D);
       GLError.maybeThrowGLException("Failed to generate mipmaps", "glGenerateMipmap");
@@ -164,6 +164,45 @@ public class Texture implements Closeable {
       if (bitmap != null) {
         bitmap.recycle();
       }
+    }
+    return texture;
+  }
+
+  /** Create a texture from a Bitmap. */
+  public static Texture createFromBitmap(
+          SampleRender render, Bitmap bitmap, WrapMode wrapMode, ColorFormat colorFormat) {
+    Texture texture = new Texture(render, Target.TEXTURE_2D, wrapMode);
+    try {
+      // Convert the bitmap to ARGB_8888 if needed
+      Bitmap convertedBitmap = convertBitmapToConfig(bitmap, Bitmap.Config.ARGB_8888);
+
+      ByteBuffer buffer = ByteBuffer.allocateDirect(convertedBitmap.getByteCount());
+      convertedBitmap.copyPixelsToBuffer(buffer);
+      buffer.rewind();
+
+      GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture.getTextureId());
+      GLError.maybeThrowGLException("Failed to bind texture", "glBindTexture");
+      GLES30.glTexImage2D(
+              GLES30.GL_TEXTURE_2D,
+              /*level=*/ 0,
+              colorFormat.glesEnum,
+              convertedBitmap.getWidth(),
+              convertedBitmap.getHeight(),
+              /*border=*/ 0,
+              GLES30.GL_RGBA,
+              GLES30.GL_UNSIGNED_BYTE,
+              buffer);
+      GLError.maybeThrowGLException("Failed to populate texture data", "glTexImage2D");
+      GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D);
+      GLError.maybeThrowGLException("Failed to generate mipmaps", "glGenerateMipmap");
+
+      // Clean up the converted bitmap if it's different from the original
+      if (convertedBitmap != bitmap) {
+        convertedBitmap.recycle();
+      }
+    } catch (Throwable t) {
+      texture.close();
+      throw t;
     }
     return texture;
   }
