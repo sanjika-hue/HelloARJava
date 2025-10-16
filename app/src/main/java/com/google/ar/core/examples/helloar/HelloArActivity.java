@@ -104,6 +104,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private MeshManager cornerLineMeshManager;
     private MeshManager visitedCellMeshManager;
     private VisitedCellManager visitedCellManager;
+    private GridManager gridManager;
+    // Grid configuration - easy to modify
+    private static final int GRID_ROWS = 4;
+    private static final int GRID_COLS = 4;
+    private static final float GRID_GAP_SIZE = 0.005f; // 5mm gap between cells
+
 
     // Matrix storage for rendering
     private final float[] modelMatrix = new float[16];
@@ -134,7 +140,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         visitedCellMeshManager = new MeshManager(surfaceView);
         floorOverlayMeshManager = new MeshManager(surfaceView);
         visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
-
+        gridManager = new GridManager(); // ADD THIS LINE
         // Set up UI listeners
         btnDone.setOnClickListener(v -> onDoneClicked());
 
@@ -229,8 +235,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         });
     }
 
+    // REPLACE the onDoneClicked() method with this:
+
+    // REPLACE the onDoneClicked() method with this:
     private void onDoneClicked() {
-        Log.d(TAG, "onDoneClicked: Starting...");
+        Log.d(TAG, "onDoneClicked: Starting grid visualization...");
 
         if (!cornerManager.hasAllCorners()) {
             Log.w(TAG, "Cannot proceed: only " + cornerManager.getCornerCount() + " corners placed");
@@ -248,54 +257,65 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
 
-        // Extract corner coordinates
-        float[] corner1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-        float[] corner2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-        float[] corner3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-        float[] corner4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
-
-        // Launch grid navigation
-        Intent intent = new Intent(this, GridNavigationActivity.class);
-        intent.putExtra("corner1", corner1);
-        intent.putExtra("corner2", corner2);
-        intent.putExtra("corner3", corner3);
-        intent.putExtra("corner4", corner4);
-
-        Log.d(TAG, "Starting GridNavigationActivity with corner data...");
-        startActivityForResult(intent, GRID_NAVIGATION_REQUEST);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-
-        if (requestCode == GRID_NAVIGATION_REQUEST && resultCode == RESULT_OK && data != null) {
+        // Initialize and create grid visualization
+        surfaceView.queueEvent(() -> {
             try {
-                ArrayList<GridCellData> visitedCells =
-                        data.getParcelableArrayListExtra("visitedCells");
+                // Initialize grid using configured values
+                gridManager.setGridSize(GRID_ROWS, GRID_COLS);
+                gridManager.setGapSize(GRID_GAP_SIZE);
+                gridManager.initialize(orderedCoordinates);
+                gridManager.createMeshes(render);
 
-                if (visitedCells != null && !visitedCells.isEmpty()) {
-                    Log.d(TAG, "Received " + visitedCells.size() + " cell data entries");
+                Log.d(TAG, "Grid visualization created: " +
+                        GRID_ROWS + "x" + GRID_COLS + " cells with " +
+                        GRID_GAP_SIZE + "m gap");
 
-                    // Process visited cells using manager
-                    visitedCellManager.processVisitedCells(visitedCells, render);
-
-                    // Count visited cells
-                    int visitedCount = 0;
-                    for (GridCellData cell : visitedCells) {
-                        if (cell.visited) visitedCount++;
-                    }
-
-                    showToastOnUiThread("Showing " + visitedCount + " visited cells in AR");
-                } else {
-                    Log.w(TAG, "No visited cell data received");
-                }
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Grid visualization created!", Toast.LENGTH_SHORT).show();
+                    tvInstructions.setText("Grid overlay active - " +
+                            GRID_ROWS + "x" + GRID_COLS + " cells");
+                });
             } catch (Exception e) {
-                Log.e(TAG, "Error processing visited cells: " + e.getMessage(), e);
-                showToastOnUiThread("Error loading visited cells");
+                Log.e(TAG, "Failed to create grid: " + e.getMessage(), e);
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Error creating grid", Toast.LENGTH_SHORT).show()
+                );
             }
-        }
+        });
     }
+
+//
+//    @Override
+//    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+//        super.onActivityResult(requestCode, resultCode, data);
+//
+//        if (requestCode == GRID_NAVIGATION_REQUEST && resultCode == RESULT_OK && data != null) {
+//            try {
+//                ArrayList<GridCellData> visitedCells =
+//                        data.getParcelableArrayListExtra("visitedCells");
+//
+//                if (visitedCells != null && !visitedCells.isEmpty()) {
+//                    Log.d(TAG, "Received " + visitedCells.size() + " cell data entries");
+//
+//                    // Process visited cells using manager
+//                    visitedCellManager.processVisitedCells(visitedCells, render);
+//
+//                    // Count visited cells
+//                    int visitedCount = 0;
+//                    for (GridCellData cell : visitedCells) {
+//                        if (cell.visited) visitedCount++;
+//                    }
+//
+//                    showToastOnUiThread("Showing " + visitedCount + " visited cells in AR");
+//                } else {
+//                    Log.w(TAG, "No visited cell data received");
+//                }
+//            } catch (Exception e) {
+//                Log.e(TAG, "Error processing visited cells: " + e.getMessage(), e);
+//                showToastOnUiThread("Error loading visited cells");
+//            }
+//        }
+//    }
 
     private void handleTapForCornerPlacement(Frame frame, Camera camera) {
         MotionEvent tap = tapHelper.poll();
@@ -425,6 +445,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return false;
     }
 
+    // UPDATE onDestroy() to cleanup grid manager
     @Override
     protected void onDestroy() {
         if (session != null) {
@@ -438,7 +459,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 cornerLineMeshManager.cleanup();
                 visitedCellMeshManager.cleanup();
                 floorOverlayMeshManager.cleanup();
-
+                gridManager.cleanup(); // ADD THIS LINE
 
                 if (pointCloudMesh != null) {
                     try {
@@ -459,7 +480,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         super.onDestroy();
     }
-
     @Override
     protected void onResume() {
         super.onResume();
@@ -763,102 +783,143 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
             cornerLineMeshManager.drawAll(render, lineShader);
         }
-// ⭐ Draw floor using ACTUAL corner positions (not bounding box)
-        if (cornerManager.hasAllCorners() && cellOverlayShader != null) {
+
+        // ⭐ NEW: Draw grid overlay
+        if (gridManager != null && cellOverlayShader != null && lineShader != null) {
             try {
-                float[] orderedCoordinates = cornerManager.getOrderedCorners();
-                if (orderedCoordinates != null && orderedCoordinates.length == 12) {
-                    // Get actual corners: topLeft, topRight, bottomLeft, bottomRight
-                    float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);   // topLeft
-                    float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);   // topRight
-                    float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);   // bottomLeft
-                    float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);  // bottomRight
+                Matrix.setIdentityM(modelMatrix, 0);
+                Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
 
-                    // Lift slightly above surface
-                    float offsetY = 0.02f;
+                // Set matrix for both shaders
+                cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+                lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
 
-                    GLES30.glEnable(GLES30.GL_BLEND);
-                    GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
-                    GLES30.glDisable(GLES30.GL_DEPTH_TEST);
-                    GLES30.glDisable(GLES30.GL_CULL_FACE);
+                // Draw cells with semi-transparent light gray
+                float[] cellColor = {0.7f, 0.7f, 0.7f, 0.3f}; // Light gray, 30% opacity
+                gridManager.drawCells(render, cellOverlayShader, cellColor);
 
-                    Matrix.setIdentityM(modelMatrix, 0);
-                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
-                    cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+                // Draw borders with white
+                float[] borderColor = {1.0f, 1.0f, 1.0f, 1.0f}; // White, solid
+                gridManager.drawBorders(render, lineShader, borderColor);
 
-                    // Create quad using actual corners with FLIPPED winding
-                    // Corners: p1=topLeft, p2=topRight, p3=bottomLeft, p4=bottomRight
-                    float[] floorVertices = {
-                            // Triangle 1: topLeft -> bottomRight -> topRight (flipped)
-                            p1[0], p1[1] + offsetY, p1[2],
-                            p4[0], p4[1] + offsetY, p4[2],
-                            p2[0], p2[1] + offsetY, p2[2],
-
-                            // Triangle 2: topLeft -> bottomLeft -> bottomRight (flipped)
-                            p1[0], p1[1] + offsetY, p1[2],
-                            p3[0], p3[1] + offsetY, p3[2],
-                            p4[0], p4[1] + offsetY, p4[2]
-                    };
-
-                    FloatBuffer floorBuffer = ByteBuffer.allocateDirect(floorVertices.length * Float.BYTES)
-                            .order(ByteOrder.nativeOrder()).asFloatBuffer();
-                    floorBuffer.put(floorVertices).position(0);
-
-                    VertexBuffer floorVb = new VertexBuffer(render, 3, floorBuffer);
-                    Mesh floorMesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{floorVb});
-
-                    cellOverlayShader.setVec4("u_Color", new float[]{0.2f, 0.4f, 0.9f, 0.6f}); // Blue
-                    render.draw(floorMesh, cellOverlayShader);
-                    floorMesh.close();
-
-                    Log.d(TAG, "Drew floor using actual corner positions");
-
-                    GLES30.glEnable(GLES30.GL_DEPTH_TEST);
-                    GLES30.glEnable(GLES30.GL_CULL_FACE);
-                }
             } catch (Exception e) {
-                Log.e(TAG, "Floor overlay failed: " + e.getMessage(), e);
+                Log.e(TAG, "Grid drawing failed: " + e.getMessage());
             }
         }
-// ────────────────────────────────────────────────────────────────────────
-//  Draw visited-cell overlays (mirrors the floor-quad drawing style)
-// ────────────────────────────────────────────────────────────────────────
-        if (!visitedCellMeshManager.isEmpty() && cellOverlayShader != null) {
-            // 1. Build the MVP exactly like the floor quad
-            Matrix.setIdentityM(modelMatrix, 0);
-            Matrix.multiplyMM(modelViewProjectionMatrix, 0,
-                    projectionMatrix, 0, viewMatrix, 0);
 
-            // 2. Same GL state as the floor overlay
-            GLES30.glEnable(GLES30.GL_BLEND);
-            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
-            GLES30.glDisable(GLES30.GL_DEPTH_TEST);   // depth test off → always draw on top
-            GLES30.glDepthFunc(GLES30.GL_ALWAYS);    // (kept for completeness)
-            GLES30.glDepthMask(false);
-            GLES30.glDisable(GLES30.GL_CULL_FACE);
-
-            // 3. Shader uniforms
-            cellOverlayShader.setVec4("u_Color",
-                    new float[]{0.2f, 0.9f, 0.3f, 0.8f});               // green overlay
-            cellOverlayShader.setMat4("u_ModelViewProjection",
-                    modelViewProjectionMatrix);
-
-            // 4. Draw all active visited-cell meshes
-            visitedCellMeshManager.drawAll(render, cellOverlayShader);
-
-            Log.d(TAG, "Drew " + visitedCellMeshManager.getActiveCount()
-                    + " visited cells");
-
-            // 5. **Leave the GL state clean** – the final restore block at the
-            //    bottom of onDrawFrame will put everything back to the global
-            //    defaults, but we also reset what we touched locally.
-            GLES30.glDisable(GLES30.GL_BLEND);
-            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
-            GLES30.glDepthFunc(GLES30.GL_LEQUAL);
-            GLES30.glDepthMask(true);
-            GLES30.glEnable(GLES30.GL_CULL_FACE);
-        }
+// ⭐ Draw floor using ACTUAL corner positions (not bounding box)
+//        if (cornerManager.hasAllCorners() && cellOverlayShader != null) {
+//            try {
+//                float[] orderedCoordinates = cornerManager.getOrderedCorners();
+//                if (orderedCoordinates != null && orderedCoordinates.length == 12) {
+//                    // Get actual corners: topLeft, topRight, bottomLeft, bottomRight
+//                    float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);   // topLeft
+//                    float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);   // topRight
+//                    float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);   // bottomLeft
+//                    float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);  // bottomRight
 //
+//                    // Lift slightly above surface
+//                    float offsetY = 0.01f;
+//
+//                    GLES30.glEnable(GLES30.GL_BLEND);
+//                    GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+//                    GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+//                    GLES30.glDisable(GLES30.GL_CULL_FACE);
+//
+//                    Matrix.setIdentityM(modelMatrix, 0);
+//                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
+//                    cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+//
+//                    // Create quad using actual corners with FLIPPED winding
+//                    // Corners: p1=topLeft, p2=topRight, p3=bottomLeft, p4=bottomRight
+//                    float[] floorVertices = {
+//                            // Triangle 1: topLeft -> bottomRight -> topRight (flipped)
+//                            p1[0], p1[1] + offsetY, p1[2],
+//                            p4[0], p4[1] + offsetY, p4[2],
+//                            p2[0], p2[1] + offsetY, p2[2],
+//
+//                            // Triangle 2: topLeft -> bottomLeft -> bottomRight (flipped)
+//                            p1[0], p1[1] + offsetY, p1[2],
+//                            p3[0], p3[1] + offsetY, p3[2],
+//                            p4[0], p4[1] + offsetY, p4[2]
+//                    };
+//
+//                    FloatBuffer floorBuffer = ByteBuffer.allocateDirect(floorVertices.length * Float.BYTES)
+//                            .order(ByteOrder.nativeOrder()).asFloatBuffer();
+//                    floorBuffer.put(floorVertices).position(0);
+//
+//                    VertexBuffer floorVb = new VertexBuffer(render, 3, floorBuffer);
+//                    Mesh floorMesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{floorVb});
+//
+//                    cellOverlayShader.setVec4("u_Color", new float[]{0.2f, 0.4f, 0.9f, 0.3f}); // Blue
+//                    render.draw(floorMesh, cellOverlayShader);
+//                    floorMesh.close();
+//
+//                    Log.d(TAG, "Drew floor using actual corner positions");
+//
+//                    GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+//                    GLES30.glEnable(GLES30.GL_CULL_FACE);
+//                }
+//            } catch (Exception e) {
+//                Log.e(TAG, "Floor overlay failed: " + e.getMessage(), e);
+//            }
+//        }
+        // ────────────────────────────────────────────────────────────────────────
+////  Draw visited-cell overlays (mirrors the floor-quad drawing style)
+//// ────────────────────────────────────────────────────────────────────────
+// ⭐ DEBUG: Draw a BRIGHT YELLOW marker at each visited cell center
+//        if (!visitedCellMeshManager.isEmpty() && cellOverlayShader != null) {
+//            try {
+//                // Get visited cell positions from manager
+//                float[] orderedCoordinates = cornerManager.getOrderedCorners();
+//                if (orderedCoordinates != null) {
+//                    float[] topLeft = Arrays.copyOfRange(orderedCoordinates, 0, 3);
+//                    float[] topRight = Arrays.copyOfRange(orderedCoordinates, 3, 6);
+//                    float[] bottomLeft = Arrays.copyOfRange(orderedCoordinates, 6, 9);
+//                    float[] bottomRight = Arrays.copyOfRange(orderedCoordinates, 9, 12);
+//
+//                    // Draw small markers at cell positions from logs
+//                    float[][] testCells = {
+//                            {0.162f, -0.454f, -0.271f},  // Cell 18
+//                            {0.197f, -0.454f, -0.271f},  // Cell 19
+//                            {0.158f, -0.454f, -0.235f}   // Cell 25
+//                    };
+//
+//                    GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+//                    GLES30.glDisable(GLES30.GL_CULL_FACE);
+//                    GLES30.glEnable(GLES30.GL_BLEND);
+//                    GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+//
+//                    Matrix.setIdentityM(modelMatrix, 0);
+//                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
+//                    cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+//
+//                    for (float[] cellPos : testCells) {
+//                        float size = 0.05f;
+//                        float[] markerVerts = {
+//                                cellPos[0], cellPos[1], cellPos[2],
+//                                cellPos[0] + size, cellPos[1], cellPos[2],
+//                                cellPos[0] + size/2, cellPos[1] + size, cellPos[2]
+//                        };
+//
+//                        FloatBuffer buf = ByteBuffer.allocateDirect(markerVerts.length * Float.BYTES)
+//                                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+//                        buf.put(markerVerts).position(0);
+//
+//                        VertexBuffer vb = new VertexBuffer(render, 3, buf);
+//                        Mesh mesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{vb});
+//
+//                        cellOverlayShader.setVec4("u_Color", new float[]{1.0f, 1.0f, 0.0f, 1.0f}); // BRIGHT YELLOW
+//                        render.draw(mesh, cellOverlayShader);
+//                        mesh.close();
+//                    }
+//
+//                    Log.d(TAG, "Drew yellow cell markers");
+//                }
+//            } catch (Exception e) {
+//                Log.e(TAG, "Cell marker failed: " + e.getMessage());
+//            }
+//        }
 
 // ⭐ RESTORE ALL OpenGL state
         GLES30.glDepthFunc(GLES30.GL_LEQUAL);
