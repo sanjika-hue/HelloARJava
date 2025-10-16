@@ -1,46 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="#F5F5F5">
 
-    <!-- AR Surface View fills the entire screen -->
-    <android.opengl.GLSurfaceView
-        android:id="@+id/surfaceview"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <!-- Instructions/Current Cell Status TextView (Top Center) -->
+    <!-- Title/Header -->
     <TextView
-        android:id="@+id/tvInstructions"
+        android:id="@+id/tvTitle"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
         android:layout_centerHorizontal="true"
         android:layout_marginTop="16dp"
-        android:background="#AA000000"
-        android:padding="12dp"
-        android:text="Loading..."
-        android:textColor="#FFFFFF"
-        android:textSize="18sp"
-        android:textStyle="bold" />
+        android:text="2D Floor Plan Navigation"
+        android:textColor="#333333"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:padding="12dp" />
 
-    <!-- Coverage and Distance Metrics TextView (Below Instructions) -->
-    <TextView
-        android:id="@+id/tvDistance"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_below="@id/tvInstructions"
-        android:layout_centerHorizontal="true"
+    <!-- Grid Container -->
+    <FrameLayout
+        android:id="@+id/gridContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_below="@id/tvTitle"
+        android:layout_above="@id/btnBackToAR"
         android:layout_marginTop="8dp"
-        android:background="#AA000000"
-        android:padding="8dp"
-        android:text="Coverage: 0.0% | Dist to Cell Center: 0.00 m"
-        android:textColor="#FFFF00"
-        android:textSize="16sp" />
+        android:layout_marginBottom="8dp"/>
 
-    <!-- Reset Button (Bottom Center) - Required by GridNavigationActivity.java -->
+    <!-- Back to AR Button -->
     <Button
-        android:id="@+id/btnReset"
+        android:id="@+id/btnBackToAR"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_alignParentBottom="true"
@@ -48,8 +38,8 @@
         android:layout_marginBottom="24dp"
         android:paddingStart="24dp"
         android:paddingEnd="24dp"
-        android:text="Back to Setup"
-        android:backgroundTint="#FF5722"
+        android:text="Back to AR View"
+        android:backgroundTint="#2196F3"
         android:textColor="#FFFFFF"
         android:textSize="16sp" />
 

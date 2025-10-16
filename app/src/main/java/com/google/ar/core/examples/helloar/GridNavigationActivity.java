@@ -7,52 +7,50 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.os.Bundle;
-import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import com.google.ar.core.Pose;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Screen 2: Non-AR Activity that visualizes the 2D floor plan grid based on the 4 boundary anchors
- * (or simulates a boundary for 2D viewing).
- * This activity handles grid creation, cell numbering, and visited color changes.
- */
 public class GridNavigationActivity extends AppCompatActivity {
     private static final String TAG = GridNavigationActivity.class.getSimpleName();
     private Pose[] boundaryPoses = new Pose[4];
     private GridView gridView;
+    private Button btnBackToAR;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_grid_navigation);
 
         Log.d(TAG, "GridNavigationActivity onCreate: Starting...");
 
-        // Use a simple LinearLayout for layout management
-        LinearLayout mainLayout = new LinearLayout(this);
-        mainLayout.setOrientation(LinearLayout.VERTICAL);
-        mainLayout.setBackgroundColor(Color.parseColor("#F5F5F5"));
-        setContentView(mainLayout);
+        // Initialize UI elements
+        FrameLayout gridContainer = findViewById(R.id.gridContainer);
+        btnBackToAR = findViewById(R.id.btnBackToAR);
 
-        // 1. Add a Title/Header TextView
-        TextView title = new TextView(this);
-        title.setText("2D Floor Plan Navigation");
-        title.setTextColor(Color.DKGRAY);
-        title.setTextSize(24);
-        title.setPadding(30, 30, 30, 30);
-        mainLayout.addView(title);
+        // Set up Back button
+        btnBackToAR.setOnClickListener(v -> returnToARView());
 
-        // 2. Retrieve the corner data from the Intent
+        // Handle system back button/gesture using OnBackPressedDispatcher
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                // Return to AR view when back button/gesture is pressed
+                Log.d(TAG, "Back pressed - returning to AR view");
+                returnToARView();
+            }
+        });
+
+        // Retrieve the corner data from the Intent
         Intent intent = getIntent();
         Log.d(TAG, "Intent received: " + (intent != null ? "not null" : "null"));
 
@@ -61,7 +59,7 @@ public class GridNavigationActivity extends AppCompatActivity {
         float[] corner3 = intent.getFloatArrayExtra("corner3");
         float[] corner4 = intent.getFloatArrayExtra("corner4");
 
-        Log.d(TAG, "corner1: " + (corner1 != null ? "length=" + corner1.length : "null"));
+        Log.d("c1", "corner1: " + (corner1 != null ? "length=" + corner1.length : "null"));
         Log.d(TAG, "corner2: " + (corner2 != null ? "length=" + corner2.length : "null"));
         Log.d(TAG, "corner3: " + (corner3 != null ? "length=" + corner3.length : "null"));
         Log.d(TAG, "corner4: " + (corner4 != null ? "length=" + corner4.length : "null"));
@@ -92,26 +90,41 @@ public class GridNavigationActivity extends AppCompatActivity {
             Log.i(TAG, "  BR: [" + corner4[0] + ", " + corner4[1] + ", " + corner4[2] + "]");
         }
 
-        // 3. Initialize the Grid View and add it to the layout
+        // Initialize the Grid View and add it to the container
         gridView = new GridView(this, boundaryPoses);
-        LinearLayout.LayoutParams layoutParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        );
-        layoutParams.weight = 1;
-        gridView.setLayoutParams(layoutParams);
-        mainLayout.addView(gridView);
+        gridContainer.addView(gridView);
 
         Log.d(TAG, "GridNavigationActivity onCreate: Complete");
     }
 
+    private void returnToARView() {
+        // Get the visited cell data from the grid view
+        ArrayList<GridCellData> cellDataList = gridView.getCellDataList();
+
+        Intent resultIntent = new Intent();
+        resultIntent.putParcelableArrayListExtra("visitedCells", cellDataList);
+        setResult(RESULT_OK, resultIntent);
+
+        int visitedCount = 0;
+        for (GridCellData cell : cellDataList) {
+            Log.d("celldata", "Cell " + cell.cellNumber + " visited: " + cell.visited);
+            if (cell.visited) visitedCount++;
+        }
+
+        Log.d("return data", "Returning to AR view with " + visitedCount + " visited cells out of " + cellDataList.size() + " total cells");
+        finish();
+    }
+
+    /**
+     * GridCell class to represent each cell in the grid
+     */
     private static class GridCell {
         public final int cellNumber;
         public final int row;
         public final int col;
         public boolean visited;
-        public Paint fillPaint; // Paint for the cell background
-        public RectF rect; // 2D drawing boundaries for the canvas
+        public Paint fillPaint;
+        public RectF rect;
 
         public GridCell(int cellNumber, int row, int col, RectF rect) {
             this.cellNumber = cellNumber;
@@ -120,17 +133,16 @@ public class GridNavigationActivity extends AppCompatActivity {
             this.rect = rect;
             this.visited = false;
             this.fillPaint = new Paint();
-            this.fillPaint.setColor(Color.WHITE); // Initial color: White (unvisited)
+            this.fillPaint.setColor(Color.WHITE);
             this.fillPaint.setStyle(Paint.Style.FILL);
-            this.fillPaint.setShadowLayer(5f, 0f, 0f, Color.GRAY); // Adding a subtle shadow
+            this.fillPaint.setShadowLayer(5f, 0f, 0f, Color.GRAY);
         }
 
         public void markVisited() {
             if (!visited) {
                 this.visited = true;
-                this.fillPaint.setColor(Color.parseColor("#4CAF50")); // Visited color: Green
+                this.fillPaint.setColor(Color.parseColor("#4CAF50")); // Green
             } else {
-                // Allow unvisiting for demonstration
                 this.visited = false;
                 this.fillPaint.setColor(Color.WHITE);
             }
@@ -138,37 +150,43 @@ public class GridNavigationActivity extends AppCompatActivity {
     }
 
     /**
-     * Custom View to draw and manage the 2D grid.
+     * Custom View to draw and manage the 2D grid
      */
-    private static class GridView extends View {
+    public static class GridView extends View {
         private final Pose[] boundaryPoses;
         private final List<GridCell> cells = new ArrayList<>();
-        private final int GRID_ROWS = 7; // Increased grid size for better visualization
+        private final int GRID_ROWS = 7;
         private final int GRID_COLS = 7;
         private Paint borderPaint;
         private Paint textPaint;
-        private float cellViewSize; // Size of a cell in screen pixels
+        private float cellViewSize;
 
         public GridView(Context context, Pose[] poses) {
             super(context);
             this.boundaryPoses = poses;
-            // Enable hardware acceleration for drawing shadow layers
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             init();
         }
 
         private void init() {
-            // Setup border paint (for drawing cell boundaries)
             borderPaint = new Paint();
             borderPaint.setColor(Color.DKGRAY);
             borderPaint.setStyle(Paint.Style.STROKE);
             borderPaint.setStrokeWidth(3f);
 
-            // Setup text paint (for drawing cell numbers)
             textPaint = new Paint();
             textPaint.setColor(Color.BLACK);
             textPaint.setTextAlign(Paint.Align.CENTER);
             textPaint.setFakeBoldText(true);
+        }
+
+        // NEW: Method to get cell data for passing back to AR view
+        public ArrayList<GridCellData> getCellDataList() {
+            ArrayList<GridCellData> cellDataList = new ArrayList<>();
+            for (GridCell cell : cells) {
+                cellDataList.add(new GridCellData(cell.cellNumber, cell.row, cell.col, cell.visited));
+            }
+            return cellDataList;
         }
 
         @Override
@@ -176,32 +194,21 @@ public class GridNavigationActivity extends AppCompatActivity {
             super.onSizeChanged(w, h, oldw, oldh);
             if (w == 0 || h == 0) return;
 
-            // Determine the maximum size for the grid square within the view
             int padding = 40;
-            // The grid is squared, based on the minimum dimension
             int gridSize = Math.min(w, h) - 2 * padding;
 
-            // Calculate starting position to center the grid
             float startX = (w - gridSize) / 2f;
             float startY = (h - gridSize) / 2f;
 
-            // Calculate the size of each cell in view pixels
             cellViewSize = (float) gridSize / GRID_COLS;
-
-            // Adjust text size based on cell size
             textPaint.setTextSize(cellViewSize / 4);
 
-            // Re-generate the 2D grid based on the new view size
             generate2DGrid(startX, startY, cellViewSize);
         }
 
         private void generate2DGrid(float startX, float startY, float cellSize) {
             cells.clear();
             int cellCount = 1;
-
-            // Note: For a true AR mapping, this section would involve complex 3D-to-2D projection
-            // using the boundaryPoses. Here, we create a simple, visually appealing grid
-            // that is constrained by the view size.
 
             for (int row = 0; row < GRID_ROWS; row++) {
                 for (int col = 0; col < GRID_COLS; col++) {
@@ -228,19 +235,12 @@ public class GridNavigationActivity extends AppCompatActivity {
                 return;
             }
 
-            // Draw each cell
             for (GridCell cell : cells) {
-                // 1. Draw the fill color (White or Green)
-                canvas.drawRoundRect(cell.rect, 10f, 10f, cell.fillPaint); // Rounded corners
-
-                // 2. Draw the border
+                canvas.drawRoundRect(cell.rect, 10f, 10f, cell.fillPaint);
                 canvas.drawRoundRect(cell.rect, 10f, 10f, borderPaint);
 
-                // 3. Draw the cell number (centered)
                 String num = String.valueOf(cell.cellNumber);
                 float x = cell.rect.centerX();
-
-                // Calculate vertical text center
                 float textHeight = textPaint.descent() - textPaint.ascent();
                 float y = cell.rect.centerY() + (textHeight / 2) - textPaint.descent();
 
@@ -254,14 +254,13 @@ public class GridNavigationActivity extends AppCompatActivity {
                 float touchX = event.getX();
                 float touchY = event.getY();
 
-                // Check which cell was tapped
                 for (GridCell cell : cells) {
                     if (cell.rect.contains(touchX, touchY)) {
                         cell.markVisited();
-                        // Request redraw to update the cell color
                         invalidate();
-                        Toast.makeText(getContext(), "Cell " + cell.cellNumber + (cell.visited ? " Visited!" : " Unvisited!"), Toast.LENGTH_SHORT).show();
-                        return true; // Event consumed
+                        Toast.makeText(getContext(), "Cell " + cell.cellNumber +
+                                (cell.visited ? " Visited!" : " Unvisited!"), Toast.LENGTH_SHORT).show();
+                        return true;
                     }
                 }
             }
