@@ -48,7 +48,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final String TAG = HelloArActivity.class.getSimpleName();
     private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
     private static final int GRID_NAVIGATION_REQUEST = 1001;
-
+    private MeshManager floorOverlayMeshManager;
     // AR Core constants
     private static final float[] SPHERICAL_HARMONIC_FACTORS = {
             0.282095f, -0.325735f, 0.325735f, -0.325735f, 0.273137f,
@@ -132,6 +132,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         cornerManager = new CornerManager();
         cornerLineMeshManager = new MeshManager(surfaceView);
         visitedCellMeshManager = new MeshManager(surfaceView);
+        floorOverlayMeshManager = new MeshManager(surfaceView);
         visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
 
         // Set up UI listeners
@@ -161,7 +162,59 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         updateInstructions();
     }
+    private void createFloorOverlay() {
+        if (!cornerManager.hasAllCorners()) return;
 
+        surfaceView.queueEvent(() -> {
+            try {
+                float[] orderedCoordinates = cornerManager.getOrderedCorners();
+                float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
+                float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
+                float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
+                float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
+
+                // ⭐ Lift each point by 2cm (more visible)
+                float offsetY = 0.02f;
+                p1[1] += offsetY;
+                p2[1] += offsetY;
+                p3[1] += offsetY;
+                p4[1] += offsetY;
+
+                // ⭐ Create quad with BOTH triangles using correct winding
+                // Make sure triangles are counter-clockwise when viewed from above
+                float[] quadVertices = {
+                        // Triangle 1: p1 -> p2 -> p3
+                        p1[0], p1[1], p1[2],
+                        p2[0], p2[1], p2[2],
+                        p3[0], p3[1], p3[2],
+
+                        // Triangle 2: p2 -> p4 -> p3
+                        p2[0], p2[1], p2[2],
+                        p4[0], p4[1], p4[2],
+                        p3[0], p3[1], p3[2]
+                };
+
+                FloatBuffer vertexBuffer = ByteBuffer
+                        .allocateDirect(quadVertices.length * Float.BYTES)
+                        .order(ByteOrder.nativeOrder())
+                        .asFloatBuffer();
+                vertexBuffer.put(quadVertices);
+                vertexBuffer.position(0);
+
+                VertexBuffer vb = new VertexBuffer(render, 3, vertexBuffer);
+                Mesh floorMesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{vb});
+
+                List<Mesh> meshList = new ArrayList<>();
+                meshList.add(floorMesh);
+                floorOverlayMeshManager.replaceMeshes(meshList);
+
+                Log.d(TAG, "Floor overlay mesh created - 2 triangles covering quad");
+                Log.d(TAG, "Vertices: " + Arrays.toString(quadVertices));
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create floor overlay: " + e.getMessage(), e);
+            }
+        });
+    }
     private void updateInstructions() {
         runOnUiThread(() -> {
             int cornerCount = cornerManager.getCornerCount();
@@ -269,7 +322,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 if (added) {
                     showToastOnUiThread("Corner " + cornerManager.getCornerCount() + " placed");
                     updateInstructions();
-                    surfaceView.queueEvent(() -> createCornerConnectionLines());
+                    surfaceView.queueEvent(() -> {
+                        createCornerConnectionLines();
+                        if (cornerManager.hasAllCorners()) {
+                            createFloorOverlay();
+                        }
+                    });
                 }
                 break;
             }
@@ -379,6 +437,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             surfaceView.queueEvent(() -> {
                 cornerLineMeshManager.cleanup();
                 visitedCellMeshManager.cleanup();
+                floorOverlayMeshManager.cleanup();
+
 
                 if (pointCloudMesh != null) {
                     try {
@@ -702,32 +762,109 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
             cornerLineMeshManager.drawAll(render, lineShader);
         }
+// ⭐ Draw floor using ACTUAL corner positions (not bounding box)
+        if (cornerManager.hasAllCorners() && cellOverlayShader != null) {
+            try {
+                float[] orderedCoordinates = cornerManager.getOrderedCorners();
+                if (orderedCoordinates != null && orderedCoordinates.length == 12) {
+                    // Get actual corners: topLeft, topRight, bottomLeft, bottomRight
+                    float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);   // topLeft
+                    float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);   // topRight
+                    float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);   // bottomLeft
+                    float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);  // bottomRight
 
-        // ⭐ MODIFIED: Draw visited cell overlays with dedicated shader
+                    // Lift slightly above surface
+                    float offsetY = 0.02f;
+
+                    GLES30.glEnable(GLES30.GL_BLEND);
+                    GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+                    GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+                    GLES30.glDisable(GLES30.GL_CULL_FACE);
+
+                    Matrix.setIdentityM(modelMatrix, 0);
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
+                    cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+
+                    // Create quad using actual corners with FLIPPED winding
+                    // Corners: p1=topLeft, p2=topRight, p3=bottomLeft, p4=bottomRight
+                    float[] floorVertices = {
+                            // Triangle 1: topLeft -> bottomRight -> topRight (flipped)
+                            p1[0], p1[1] + offsetY, p1[2],
+                            p4[0], p4[1] + offsetY, p4[2],
+                            p2[0], p2[1] + offsetY, p2[2],
+
+                            // Triangle 2: topLeft -> bottomLeft -> bottomRight (flipped)
+                            p1[0], p1[1] + offsetY, p1[2],
+                            p3[0], p3[1] + offsetY, p3[2],
+                            p4[0], p4[1] + offsetY, p4[2]
+                    };
+
+                    FloatBuffer floorBuffer = ByteBuffer.allocateDirect(floorVertices.length * Float.BYTES)
+                            .order(ByteOrder.nativeOrder()).asFloatBuffer();
+                    floorBuffer.put(floorVertices).position(0);
+
+                    VertexBuffer floorVb = new VertexBuffer(render, 3, floorBuffer);
+                    Mesh floorMesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{floorVb});
+
+                    cellOverlayShader.setVec4("u_Color", new float[]{0.2f, 0.4f, 0.9f, 0.6f}); // Blue
+                    render.draw(floorMesh, cellOverlayShader);
+                    floorMesh.close();
+
+                    Log.d(TAG, "Drew floor using actual corner positions");
+
+                    GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+                    GLES30.glEnable(GLES30.GL_CULL_FACE);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Floor overlay failed: " + e.getMessage(), e);
+            }
+        }
+// ────────────────────────────────────────────────────────────────────────
+//  Draw visited-cell overlays (mirrors the floor-quad drawing style)
+// ────────────────────────────────────────────────────────────────────────
         if (!visitedCellMeshManager.isEmpty() && cellOverlayShader != null) {
+            // 1. Build the MVP exactly like the floor quad
             Matrix.setIdentityM(modelMatrix, 0);
-            Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
-            cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+            Matrix.multiplyMM(modelViewProjectionMatrix, 0,
+                    projectionMatrix, 0, viewMatrix, 0);
 
-            // Enable blending for semi-transparent overlay
+            // 2. Same GL state as the floor overlay
             GLES30.glEnable(GLES30.GL_BLEND);
             GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
-
-            // Disable depth writing so cells don't block objects behind them
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST);   // depth test off → always draw on top
+            GLES30.glDepthFunc(GLES30.GL_ALWAYS);    // (kept for completeness)
             GLES30.glDepthMask(false);
+            GLES30.glDisable(GLES30.GL_CULL_FACE);
 
-            // Draw all visited cells with the green overlay shader
+            // 3. Shader uniforms
+            cellOverlayShader.setVec4("u_Color",
+                    new float[]{0.2f, 0.9f, 0.3f, 0.8f});               // green overlay
+            cellOverlayShader.setMat4("u_ModelViewProjection",
+                    modelViewProjectionMatrix);
+
+            // 4. Draw all active visited-cell meshes
             visitedCellMeshManager.drawAll(render, cellOverlayShader);
 
-            // Re-enable depth writing
-            GLES30.glDepthMask(true);
+            Log.d(TAG, "Drew " + visitedCellMeshManager.getActiveCount()
+                    + " visited cells");
+
+            // 5. **Leave the GL state clean** – the final restore block at the
+            //    bottom of onDrawFrame will put everything back to the global
+            //    defaults, but we also reset what we touched locally.
             GLES30.glDisable(GLES30.GL_BLEND);
-
-            // Log for debugging
-            Log.d(TAG, "Drew " + visitedCellMeshManager.getActiveCount() + " visited cells");
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+            GLES30.glDepthFunc(GLES30.GL_LEQUAL);
+            GLES30.glDepthMask(true);
+            GLES30.glEnable(GLES30.GL_CULL_FACE);
         }
-    }
+//
 
+// ⭐ RESTORE ALL OpenGL state
+        GLES30.glDepthFunc(GLES30.GL_LEQUAL);
+        GLES30.glDepthMask(true);
+        GLES30.glDisable(GLES30.GL_BLEND);
+        GLES30.glEnable(GLES30.GL_CULL_FACE);
+    }
 
     private boolean hasTrackingPlane() {
         for (Plane plane : session.getAllTrackables(Plane.class)) {

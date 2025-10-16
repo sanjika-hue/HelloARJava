@@ -186,6 +186,9 @@ public class VisitedCellManager {
     /**
      * Create a quad mesh for a single cell
      */
+    /**
+     * Create a quad mesh for a single cell
+     */
     private Mesh createCellQuadMesh(float[] center, float[] cellWidth,
                                     float[] cellHeight, SampleRender render) {
         // Scale down slightly to show gaps between cells
@@ -200,33 +203,42 @@ public class VisitedCellManager {
                 cellHeight[2] * 0.45f
         };
 
-        // Create quad vertices (2 triangles)
-        float[] vertices = new float[]{
-                // Triangle 1
+        // Calculate the 4 corners of the cell quad
+        float[] topLeft = new float[]{
                 center[0] - halfWidth[0] - halfHeight[0],
                 center[1] + CELL_Y_OFFSET,
-                center[2] - halfWidth[2] - halfHeight[2],
+                center[2] - halfWidth[2] - halfHeight[2]
+        };
 
+        float[] topRight = new float[]{
                 center[0] + halfWidth[0] - halfHeight[0],
                 center[1] + CELL_Y_OFFSET,
-                center[2] + halfWidth[2] - halfHeight[2],
+                center[2] + halfWidth[2] - halfHeight[2]
+        };
 
-                center[0] + halfWidth[0] + halfHeight[0],
-                center[1] + CELL_Y_OFFSET,
-                center[2] + halfWidth[2] + halfHeight[2],
-
-                // Triangle 2
-                center[0] - halfWidth[0] - halfHeight[0],
-                center[1] + CELL_Y_OFFSET,
-                center[2] - halfWidth[2] - halfHeight[2],
-
-                center[0] + halfWidth[0] + halfHeight[0],
-                center[1] + CELL_Y_OFFSET,
-                center[2] + halfWidth[2] + halfHeight[2],
-
+        float[] bottomLeft = new float[]{
                 center[0] - halfWidth[0] + halfHeight[0],
                 center[1] + CELL_Y_OFFSET,
                 center[2] - halfWidth[2] + halfHeight[2]
+        };
+
+        float[] bottomRight = new float[]{
+                center[0] + halfWidth[0] + halfHeight[0],
+                center[1] + CELL_Y_OFFSET,
+                center[2] + halfWidth[2] + halfHeight[2]
+        };
+
+        // ⭐ Create quad vertices with FLIPPED winding (counter-clockwise from above)
+        float[] vertices = new float[]{
+                // Triangle 1: topLeft -> bottomRight -> topRight (flipped)
+                topLeft[0], topLeft[1], topLeft[2],
+                bottomRight[0], bottomRight[1], bottomRight[2],
+                topRight[0], topRight[1], topRight[2],
+
+                // Triangle 2: topLeft -> bottomLeft -> bottomRight (flipped)
+                topLeft[0], topLeft[1], topLeft[2],
+                bottomLeft[0], bottomLeft[1], bottomLeft[2],
+                bottomRight[0], bottomRight[1], bottomRight[2]
         };
 
         // Create vertex buffer
