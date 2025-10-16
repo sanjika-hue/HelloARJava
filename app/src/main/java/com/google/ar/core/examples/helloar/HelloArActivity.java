@@ -22,6 +22,7 @@ import android.view.MotionEvent;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.RelativeLayout;
 import android.widget.Toast;
@@ -140,6 +141,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final float[] viewLightDirection = new float[4];
     private Shader cellOverlayShader;  // NEW - dedicated shader for cell overlays
 
+    // UI Elements - ADD THESE NEW ONES
+    private androidx.cardview.widget.CardView cardGridInfo;
+    private TextView tvGridSize;
+    private TextView tvVisitedCount;
+    private androidx.cardview.widget.CardView cardDistance;
+    private LinearLayout cornerHintsContainer;
+    private View[] cornerIndicators = new View[4];
+
+
+    // Update your onCreate() method - ADD THIS SECTION:
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -151,6 +162,19 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         tvDistance = findViewById(R.id.tvDistance);
         surfaceView = findViewById(R.id.surfaceview);
 
+        // ⭐ NEW: Initialize professional UI elements
+        cardGridInfo = findViewById(R.id.cardGridInfo);
+        tvGridSize = findViewById(R.id.tvGridSize);
+        tvVisitedCount = findViewById(R.id.tvVisitedCount);
+        cardDistance = findViewById(R.id.cardDistance);
+        cornerHintsContainer = findViewById(R.id.cornerHintsContainer);
+
+        // Initialize corner indicators
+        cornerIndicators[0] = findViewById(R.id.cornerIndicator1);
+        cornerIndicators[1] = findViewById(R.id.cornerIndicator2);
+        cornerIndicators[2] = findViewById(R.id.cornerIndicator3);
+        cornerIndicators[3] = findViewById(R.id.cornerIndicator4);
+
         // ⭐ CREATE 2D grid view container (initially hidden)
         RelativeLayout rootLayout = findViewById(R.id.root_layout);
         gridViewContainer = new FrameLayout(this);
@@ -161,6 +185,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 RelativeLayout.LayoutParams.MATCH_PARENT
         );
         rootLayout.addView(gridViewContainer, containerParams);
+
 
         // Initialize managers
         cornerManager = new CornerManager();
@@ -263,21 +288,38 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
     }
+
+    // ⭐ NEW: Update the updateInstructions() method:
     private void updateInstructions() {
         runOnUiThread(() -> {
             int cornerCount = cornerManager.getCornerCount();
+
+            // Update corner indicators
+            for (int i = 0; i < cornerIndicators.length; i++) {
+                if (i < cornerCount) {
+                    cornerIndicators[i].setBackgroundResource(R.drawable.corner_indicator);
+                } else {
+                    cornerIndicators[i].setBackgroundResource(R.drawable.corner_indicator_empty);
+                }
+            }
+
             if (cornerCount < 4) {
                 tvInstructions.setText("Tap to place corner anchor " + (cornerCount + 1) + " of 4");
                 btnDone.setEnabled(false);
+                btnDone.setAlpha(0.5f);
+                cornerHintsContainer.setVisibility(View.VISIBLE);
             } else {
-                tvInstructions.setText("All 4 corners placed. Press 'Done' to launch navigation.");
+                tvInstructions.setText("All 4 corners placed. Press 'Done' to create grid.");
                 btnDone.setEnabled(true);
+                btnDone.setAlpha(1.0f);
+                cornerHintsContainer.setVisibility(View.GONE);
             }
             tvDistance.setVisibility(View.GONE);
+            cardDistance.setVisibility(View.GONE);
         });
     }
 
-    // REPLACE the onDoneClicked() method with this:
+    // ⭐ UPDATE: Enhanced onDoneClicked() with professional UI updates:
     private void onDoneClicked() {
         // Check if grid is already created
         if (gridManager != null && gridManager.hasAllCorners()) {
@@ -322,10 +364,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         GRID_GAP_SIZE + "m gap");
 
                 runOnUiThread(() -> {
+                    // Update UI for professional look
                     Toast.makeText(this, "Grid visualization created!", Toast.LENGTH_SHORT).show();
-                    tvInstructions.setText("Grid overlay active - " +
-                            GRID_ROWS + "x" + GRID_COLS + " cells");
-                    btnDone.setText("2D View");
+                    tvInstructions.setText("Grid overlay active - Tap '2D View' to edit");
+
+                    // Show grid info card
+                    cardGridInfo.setVisibility(View.VISIBLE);
+                    tvGridSize.setText(GRID_ROWS + "×" + GRID_COLS + " Grid Active");
+                    updateVisitedCountDisplay();
+
+                    // Update button
+                    btnDone.setText("2D VIEW");
 
                     // Initialize 2D grid view
                     initialize2DGridView(finalCoordinates);
@@ -339,37 +388,18 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         });
     }
 
-    private void initialize2DGridView(float[] orderedCoordinates) {
-        // Convert coordinates to Pose objects for GridView
-        float[] identityRotation = new float[]{0f, 0f, 0f, 1f};
-        Pose[] boundaryPoses = new Pose[4];
-        boundaryPoses[0] = new Pose(Arrays.copyOfRange(orderedCoordinates, 0, 3), identityRotation);
-        boundaryPoses[1] = new Pose(Arrays.copyOfRange(orderedCoordinates, 3, 6), identityRotation);
-        boundaryPoses[2] = new Pose(Arrays.copyOfRange(orderedCoordinates, 6, 9), identityRotation);
-        boundaryPoses[3] = new Pose(Arrays.copyOfRange(orderedCoordinates, 9, 12), identityRotation);
+    // ⭐ NEW: Helper method to update visited count display
+    private void updateVisitedCountDisplay() {
+        int visitedCount = 0;
+        for (boolean visited : visitedCells) {
+            if (visited) visitedCount++;
+        }
 
-        // Create custom GridView that matches our grid configuration
-        gridView2D = new Custom2DGridView(this, boundaryPoses);
-
-        // Add "Back to AR" button to grid container
-        Button btnBackToAR = new Button(this);
-        btnBackToAR.setText("Back to AR View");
-        btnBackToAR.setBackgroundColor(Color.parseColor("#2196F3"));
-        btnBackToAR.setTextColor(Color.WHITE);
-        FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-        );
-        buttonParams.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL;
-        buttonParams.bottomMargin = 50;
-        btnBackToAR.setLayoutParams(buttonParams);
-        btnBackToAR.setOnClickListener(v -> toggle2DGridView());
-
-        gridViewContainer.removeAllViews();
-        gridViewContainer.addView(gridView2D);
-        gridViewContainer.addView(btnBackToAR);
+        int totalCells = GRID_ROWS * GRID_COLS;
+        tvVisitedCount.setText(visitedCount + " of " + totalCells + " cells visited");
     }
 
+    // ⭐ UPDATE: Enhanced toggle2DGridView() with UI updates:
     private void toggle2DGridView() {
         // Safety check
         if (gridViewContainer == null) {
@@ -386,6 +416,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             surfaceView.setVisibility(View.GONE);
             btnDone.setVisibility(View.GONE);
             tvInstructions.setVisibility(View.GONE);
+            cardGridInfo.setVisibility(View.GONE);
 
             // Update 2D view with current visited state
             if (gridView2D != null) {
@@ -399,10 +430,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             surfaceView.setVisibility(View.VISIBLE);
             btnDone.setVisibility(View.VISIBLE);
             tvInstructions.setVisibility(View.VISIBLE);
+            cardGridInfo.setVisibility(View.VISIBLE);
 
             // Get updated visited cells from 2D view
             if (gridView2D != null) {
                 visitedCells = gridView2D.getVisitedState();
+
+                // Update visited count display
+                updateVisitedCountDisplay();
 
                 // Update AR meshes with visited cells
                 surfaceView.queueEvent(() -> updateGridMeshColors());
@@ -412,7 +447,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
     }
 
-    // Update grid mesh colors based on visited state
+    // ⭐ UPDATE: Enhanced updateGridMeshColors() with UI feedback:
     private void updateGridMeshColors() {
         try {
             // Recreate meshes - this will be called on GL thread
@@ -429,15 +464,171 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
                 final int count = visitedCount;
                 runOnUiThread(() -> {
+                    updateVisitedCountDisplay();
                     Toast.makeText(HelloArActivity.this,
                             count + " cells marked as visited", Toast.LENGTH_SHORT).show();
                 });
             }
         } catch (Exception e) {
             Log.e(TAG, "Error updating grid mesh colors: " + e.getMessage(), e);
+            Log.e(TAG, "Error updating grid mesh colors: " + e.getMessage(), e);
         }
     }
+    private void initialize2DGridView(float[] orderedCoordinates) {
+        // Convert coordinates to Pose objects for GridView
+        float[] identityRotation = new float[]{0f, 0f, 0f, 1f};
+        Pose[] boundaryPoses = new Pose[4];
+        boundaryPoses[0] = new Pose(Arrays.copyOfRange(orderedCoordinates, 0, 3), identityRotation);
+        boundaryPoses[1] = new Pose(Arrays.copyOfRange(orderedCoordinates, 3, 6), identityRotation);
+        boundaryPoses[2] = new Pose(Arrays.copyOfRange(orderedCoordinates, 6, 9), identityRotation);
+        boundaryPoses[3] = new Pose(Arrays.copyOfRange(orderedCoordinates, 9, 12), identityRotation);
 
+        // Clear container
+        gridViewContainer.removeAllViews();
+
+        // Create custom GridView that matches our grid configuration
+        gridView2D = new Custom2DGridView(this, boundaryPoses);
+        gridViewContainer.addView(gridView2D);
+
+        // ⭐ PROFESSIONAL: Create top bar for 2D view
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        topBar.setBackgroundColor(Color.parseColor("#2196F3"));
+        topBar.setPadding(20, 40, 20, 20);
+
+        FrameLayout.LayoutParams topBarParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        topBarParams.gravity = android.view.Gravity.TOP;
+
+        // Title
+        TextView tvTitle = new TextView(this);
+        tvTitle.setText("2D Floor Plan");
+        tvTitle.setTextColor(Color.WHITE);
+        tvTitle.setTextSize(20);
+        tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1.0f
+        );
+        tvTitle.setLayoutParams(titleParams);
+        topBar.addView(tvTitle);
+
+        // Info text
+        TextView tvInfo = new TextView(this);
+        tvInfo.setText("Tap cells to mark as visited");
+        tvInfo.setTextColor(Color.parseColor("#BBDEFB"));
+        tvInfo.setTextSize(14);
+        topBar.addView(tvInfo);
+
+        gridViewContainer.addView(topBar, topBarParams);
+
+        // ⭐ PROFESSIONAL: Create bottom action bar for 2D view
+        LinearLayout bottomBar = new LinearLayout(this);
+        bottomBar.setOrientation(LinearLayout.VERTICAL);
+        bottomBar.setBackgroundColor(Color.parseColor("#FAFAFA"));
+        bottomBar.setPadding(20, 20, 20, 40);
+
+        FrameLayout.LayoutParams bottomBarParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        bottomBarParams.gravity = android.view.Gravity.BOTTOM;
+
+        // Stats card
+        androidx.cardview.widget.CardView statsCard = new androidx.cardview.widget.CardView(this);
+        statsCard.setCardBackgroundColor(Color.WHITE);
+        statsCard.setRadius(12 * getResources().getDisplayMetrics().density);
+        statsCard.setCardElevation(4 * getResources().getDisplayMetrics().density);
+        LinearLayout.LayoutParams statsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        statsParams.bottomMargin = (int)(12 * getResources().getDisplayMetrics().density);
+
+        LinearLayout statsContent = new LinearLayout(this);
+        statsContent.setOrientation(LinearLayout.HORIZONTAL);
+        statsContent.setPadding(16, 16, 16, 16);
+
+        // Grid size info
+        LinearLayout gridSizeLayout = new LinearLayout(this);
+        gridSizeLayout.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams gridSizeParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1.0f
+        );
+        gridSizeLayout.setLayoutParams(gridSizeParams);
+
+        TextView tvGridSizeLabel = new TextView(this);
+        tvGridSizeLabel.setText("GRID SIZE");
+        tvGridSizeLabel.setTextColor(Color.parseColor("#757575"));
+        tvGridSizeLabel.setTextSize(10);
+        gridSizeLayout.addView(tvGridSizeLabel);
+
+        TextView tvGridSizeValue = new TextView(this);
+        tvGridSizeValue.setText(GRID_ROWS + " × " + GRID_COLS);
+        tvGridSizeValue.setTextColor(Color.parseColor("#212121"));
+        tvGridSizeValue.setTextSize(18);
+        tvGridSizeValue.setTypeface(null, android.graphics.Typeface.BOLD);
+        gridSizeLayout.addView(tvGridSizeValue);
+
+        statsContent.addView(gridSizeLayout);
+
+        // Visited count info
+        LinearLayout visitedLayout = new LinearLayout(this);
+        visitedLayout.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams visitedParams = new LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1.0f
+        );
+        visitedLayout.setLayoutParams(visitedParams);
+
+        TextView tvVisitedLabel = new TextView(this);
+        tvVisitedLabel.setText("VISITED");
+        tvVisitedLabel.setTextColor(Color.parseColor("#757575"));
+        tvVisitedLabel.setTextSize(10);
+        visitedLayout.addView(tvVisitedLabel);
+
+        TextView tvVisitedValue = new TextView(this);
+        int visitedCount = 0;
+        for (boolean visited : visitedCells) {
+            if (visited) visitedCount++;
+        }
+        tvVisitedValue.setText(visitedCount + " / " + (GRID_ROWS * GRID_COLS));
+        tvVisitedValue.setTextColor(Color.parseColor("#4CAF50"));
+        tvVisitedValue.setTextSize(18);
+        tvVisitedValue.setTypeface(null, android.graphics.Typeface.BOLD);
+        visitedLayout.addView(tvVisitedValue);
+
+        statsContent.addView(visitedLayout);
+        statsCard.addView(statsContent);
+        bottomBar.addView(statsCard, statsParams);
+
+        // With this:
+        Button btnBackToAR = new Button(this);
+        btnBackToAR.setText("BACK TO AR VIEW");
+        btnBackToAR.setTextSize(16);
+        btnBackToAR.setTypeface(null, android.graphics.Typeface.BOLD);
+        btnBackToAR.setBackgroundColor(Color.parseColor("#2196F3"));
+        btnBackToAR.setTextColor(Color.WHITE);
+        btnBackToAR.setElevation(8 * getResources().getDisplayMetrics().density);
+
+
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (int)(56 * getResources().getDisplayMetrics().density)
+        );
+        btnBackToAR.setLayoutParams(buttonParams);
+        btnBackToAR.setOnClickListener(v -> toggle2DGridView());
+
+        bottomBar.addView(btnBackToAR);
+        gridViewContainer.addView(bottomBar, bottomBarParams);
+    }
     // Draw a single grid cell with specified color
     private void drawSingleCell(GridManager.GridCell cell,
                                 com.google.ar.core.examples.helloar.common.samplerender.Shader shader,
