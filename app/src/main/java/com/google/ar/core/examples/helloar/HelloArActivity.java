@@ -494,7 +494,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
     }
 
-    // Replace your onSurfaceCreated method with this version:
     @Override
     public void onSurfaceCreated(SampleRender render) {
         this.render = render;
