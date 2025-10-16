@@ -18,123 +18,94 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.PopupMenu;
 import android.widget.Toast;
+import android.widget.TextView;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import com.google.ar.core.Anchor;
-import com.google.ar.core.ArCoreApk;
-import com.google.ar.core.Pose;
-import com.google.ar.core.ArCoreApk.Availability;
-import com.google.ar.core.Camera;
-import com.google.ar.core.Config;
-import com.google.ar.core.Frame;
-import com.google.ar.core.LightEstimate;
-import com.google.ar.core.Plane;
-import com.google.ar.core.PointCloud;
-import com.google.ar.core.Session;
-import com.google.ar.core.Trackable;
-import com.google.ar.core.TrackingFailureReason;
-import com.google.ar.core.TrackingState;
-import com.google.ar.core.examples.helloar.common.helpers.CameraPermissionHelper;
-import com.google.ar.core.examples.helloar.common.helpers.DepthSettings;
-import com.google.ar.core.examples.helloar.common.helpers.DisplayRotationHelper;
-import com.google.ar.core.examples.helloar.common.helpers.FullScreenHelper;
-import com.google.ar.core.examples.helloar.common.helpers.InstantPlacementSettings;
-import com.google.ar.core.examples.helloar.common.helpers.SnackbarHelper;
-import com.google.ar.core.examples.helloar.common.helpers.TapHelper;
-import com.google.ar.core.examples.helloar.common.helpers.TrackingStateHelper;
-import com.google.ar.core.examples.helloar.common.samplerender.Framebuffer;
+
+import com.google.ar.core.*;
+import com.google.ar.core.examples.helloar.common.helpers.*;
+import com.google.ar.core.examples.helloar.common.samplerender.*;
 import com.google.ar.core.examples.helloar.common.samplerender.Mesh;
 import com.google.ar.core.examples.helloar.common.samplerender.Mesh.PrimitiveMode;
-import com.google.ar.core.examples.helloar.common.samplerender.SampleRender;
-import com.google.ar.core.examples.helloar.common.samplerender.Shader;
-import com.google.ar.core.examples.helloar.common.samplerender.Texture;
-import com.google.ar.core.examples.helloar.common.samplerender.VertexBuffer;
-import com.google.ar.core.examples.helloar.common.samplerender.arcore.BackgroundRenderer;
-import com.google.ar.core.examples.helloar.common.samplerender.arcore.PlaneRenderer;
-import com.google.ar.core.examples.helloar.common.samplerender.arcore.SpecularCubemapFilter;
-import com.google.ar.core.exceptions.CameraNotAvailableException;
-import com.google.ar.core.exceptions.NotYetAvailableException;
-import com.google.ar.core.exceptions.UnavailableApkTooOldException;
-import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
-import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException;
-import com.google.ar.core.exceptions.UnavailableSdkTooOldException;
-import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
+import com.google.ar.core.examples.helloar.common.samplerender.arcore.*;
+import com.google.ar.core.exceptions.*;
+import com.google.ar.core.examples.helloar.managers.*;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.nio.FloatBuffer;
-import android.widget.TextView;
-import com.google.ar.core.HitResult;
-import java.nio.ByteOrder;
 
+/**
+ * Refactored HelloArActivity with proper separation of concerns
+ */
 public class HelloArActivity extends AppCompatActivity implements SampleRender.Renderer {
 
     private static final String TAG = HelloArActivity.class.getSimpleName();
     private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
+    private static final int GRID_NAVIGATION_REQUEST = 1001;
 
-    private static final float[] sphericalHarmonicFactors = {
+    // AR Core constants
+    private static final float[] SPHERICAL_HARMONIC_FACTORS = {
             0.282095f, -0.325735f, 0.325735f, -0.325735f, 0.273137f,
             -0.273137f, 0.078848f, -0.273137f, 0.136569f,
     };
-
     private static final float Z_NEAR = 0.1f;
     private static final float Z_FAR = 100f;
     private static final int CUBEMAP_RESOLUTION = 16;
     private static final int CUBEMAP_NUMBER_OF_IMPORTANCE_SAMPLES = 32;
 
+    // AR Session and rendering
     private GLSurfaceView surfaceView;
-    private boolean installRequested;
     private Session session;
     private SampleRender render;
+    private boolean installRequested;
+    private boolean hasSetTextureNames = false;
 
+    // Helpers
     private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
     private DisplayRotationHelper displayRotationHelper;
     private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
     private TapHelper tapHelper;
-    private boolean isDestroyed = false;
 
+    // UI Elements
     private Button btnDone;
     private TextView tvInstructions;
     private TextView tvDistance;
 
+    // Rendering components
     private PlaneRenderer planeRenderer;
     private BackgroundRenderer backgroundRenderer;
     private Framebuffer virtualSceneFramebuffer;
-    private boolean hasSetTextureNames = false;
-    private final List<Mesh> cornerLineMeshes = new ArrayList<>();
-
-    private final DepthSettings depthSettings = new DepthSettings();
-    private boolean[] depthSettingsMenuDialogCheckboxes = new boolean[2];
-
-    private final InstantPlacementSettings instantPlacementSettings = new InstantPlacementSettings();
-    private boolean[] instantPlacementSettingsMenuDialogCheckboxes = new boolean[1];
-
     private VertexBuffer pointCloudVertexBuffer;
     private Mesh pointCloudMesh;
     private Shader pointCloudShader;
-    private long lastPointCloudTimestamp = 0;
-
     private Shader lineShader;
-
     private Mesh virtualObjectMesh;
     private Shader virtualObjectShader;
     private Texture virtualObjectAlbedoTexture;
     private Texture virtualObjectAlbedoInstantPlacementTexture;
-
     private Texture dfgTexture;
-
     private SpecularCubemapFilter cubemapFilter;
+    private long lastPointCloudTimestamp = 0;
 
-    private final List<WrappedAnchor> cornerAnchors = new ArrayList<>();
+    // Settings
+    private final DepthSettings depthSettings = new DepthSettings();
+    private boolean[] depthSettingsMenuDialogCheckboxes = new boolean[2];
+    private final InstantPlacementSettings instantPlacementSettings = new InstantPlacementSettings();
+    private boolean[] instantPlacementSettingsMenuDialogCheckboxes = new boolean[1];
 
-    // Fields for visited cells overlay
-    private static final int GRID_NAVIGATION_REQUEST = 1001;
-    private final List<Mesh> visitedCellMeshes = new ArrayList<>();
-    private final List<float[]> visitedCellPositions = new ArrayList<>();
+    // Managers - NEW!
+    private CornerManager cornerManager;
+    private MeshManager cornerLineMeshManager;
+    private MeshManager visitedCellMeshManager;
+    private VisitedCellManager visitedCellManager;
 
+    // Matrix storage for rendering
     private final float[] modelMatrix = new float[16];
     private final float[] viewMatrix = new float[16];
     private final float[] projectionMatrix = new float[16];
@@ -144,30 +115,42 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private final float[] viewInverseMatrix = new float[16];
     private final float[] worldLightDirection = {0.0f, 0.0f, 0.0f, 0.0f};
     private final float[] viewLightDirection = new float[4];
+    private Shader cellOverlayShader;  // NEW - dedicated shader for cell overlays
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Initialize UI
         btnDone = findViewById(R.id.btnDone);
         tvInstructions = findViewById(R.id.tvInstructions);
         tvDistance = findViewById(R.id.tvDistance);
+        surfaceView = findViewById(R.id.surfaceview);
 
+        // Initialize managers
+        cornerManager = new CornerManager();
+        cornerLineMeshManager = new MeshManager(surfaceView);
+        visitedCellMeshManager = new MeshManager(surfaceView);
+        visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
+
+        // Set up UI listeners
         btnDone.setOnClickListener(v -> onDoneClicked());
 
-        surfaceView = findViewById(R.id.surfaceview);
+        // Initialize AR helpers
         displayRotationHelper = new DisplayRotationHelper(this);
-
         tapHelper = new TapHelper(this);
         surfaceView.setOnTouchListener(tapHelper);
 
+        // Initialize renderer
         render = new SampleRender(surfaceView, this, getAssets());
         installRequested = false;
 
+        // Initialize settings
         depthSettings.onCreate(this);
         instantPlacementSettings.onCreate(this);
 
+        // Set up settings button
         ImageButton settingsButton = findViewById(R.id.settings_button);
         settingsButton.setOnClickListener(v -> {
             PopupMenu popup = new PopupMenu(HelloArActivity.this, v);
@@ -175,13 +158,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             popup.inflate(R.menu.settings_menu);
             popup.show();
         });
+
         updateInstructions();
     }
 
     private void updateInstructions() {
         runOnUiThread(() -> {
-            if (cornerAnchors.size() < 4) {
-                tvInstructions.setText("Tap to place corner anchor " + (cornerAnchors.size() + 1) + " of 4");
+            int cornerCount = cornerManager.getCornerCount();
+            if (cornerCount < 4) {
+                tvInstructions.setText("Tap to place corner anchor " + (cornerCount + 1) + " of 4");
                 btnDone.setEnabled(false);
             } else {
                 tvInstructions.setText("All 4 corners placed. Press 'Done' to launch navigation.");
@@ -193,343 +178,70 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private void onDoneClicked() {
         Log.d(TAG, "onDoneClicked: Starting...");
-        Log.d(TAG, "cornerAnchors.size() = " + cornerAnchors.size());
 
-        if (cornerAnchors.size() == 4) {
-            List<float[]> corners = new ArrayList<>();
-            for (int i = 0; i < cornerAnchors.size(); i++) {
-                float[] translation = cornerAnchors.get(i).getAnchor().getPose().getTranslation();
-                corners.add(translation);
-                Log.d(TAG, "Corner " + i + " raw: [" + translation[0] + ", " + translation[1] + ", " + translation[2] + "]");
-            }
-
-            float[] orderedCoordinates = orderCornersAsRectangle(corners);
-
-            if (orderedCoordinates == null || orderedCoordinates.length != 12) {
-                Log.e(TAG, "Error: orderedCoordinates is null or wrong length");
-                Toast.makeText(this, "Error in corner ordering. Try placing corners again.", Toast.LENGTH_LONG).show();
-                return;
-            }
-
-            float[] corner1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-            float[] corner2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-            float[] corner3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-            float[] corner4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
-
-            Intent intent = new Intent(this, GridNavigationActivity.class);
-            intent.putExtra("corner1", corner1);
-            intent.putExtra("corner2", corner2);
-            intent.putExtra("corner3", corner3);
-            intent.putExtra("corner4", corner4);
-
-            Log.d(TAG, "Starting GridNavigationActivity with corner data...");
-            startActivityForResult(intent, GRID_NAVIGATION_REQUEST);
-        } else {
-            Log.w(TAG, "Cannot proceed: only " + cornerAnchors.size() + " corners placed");
-            Toast.makeText(this, "Please place exactly 4 corners before pressing Done.", Toast.LENGTH_LONG).show();
+        if (!cornerManager.hasAllCorners()) {
+            Log.w(TAG, "Cannot proceed: only " + cornerManager.getCornerCount() + " corners placed");
+            Toast.makeText(this, "Please place exactly 4 corners before pressing Done.",
+                    Toast.LENGTH_LONG).show();
+            return;
         }
+
+        float[] orderedCoordinates = cornerManager.getOrderedCorners();
+
+        if (orderedCoordinates == null || orderedCoordinates.length != 12) {
+            Log.e(TAG, "Error: orderedCoordinates is null or wrong length");
+            Toast.makeText(this, "Error in corner ordering. Try placing corners again.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // Extract corner coordinates
+        float[] corner1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
+        float[] corner2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
+        float[] corner3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
+        float[] corner4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
+
+        // Launch grid navigation
+        Intent intent = new Intent(this, GridNavigationActivity.class);
+        intent.putExtra("corner1", corner1);
+        intent.putExtra("corner2", corner2);
+        intent.putExtra("corner3", corner3);
+        intent.putExtra("corner4", corner4);
+
+        Log.d(TAG, "Starting GridNavigationActivity with corner data...");
+        startActivityForResult(intent, GRID_NAVIGATION_REQUEST);
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
         if (requestCode == GRID_NAVIGATION_REQUEST && resultCode == RESULT_OK && data != null) {
             try {
-                ArrayList<GridCellData> visitedCells = data.getParcelableArrayListExtra("visitedCells");
+                ArrayList<GridCellData> visitedCells =
+                        data.getParcelableArrayListExtra("visitedCells");
+
                 if (visitedCells != null && !visitedCells.isEmpty()) {
-                    Log.d("getdata", "Received " + visitedCells.size() + " cell data entries");
-                    calculateVisitedCellPositions(visitedCells);
-                    if (render != null && surfaceView != null) {
-                        surfaceView.queueEvent(() -> {
-                            try {
-                                createVisitedCellMeshes(render);
-                            } catch (Exception e) {
-                                Log.e(TAG, "Error creating visited cell meshes: " + e.getMessage());
-                                e.printStackTrace();
-                            }
-                        });
-                    }
+                    Log.d(TAG, "Received " + visitedCells.size() + " cell data entries");
+
+                    // Process visited cells using manager
+                    visitedCellManager.processVisitedCells(visitedCells, render);
+
+                    // Count visited cells
                     int visitedCount = 0;
                     for (GridCellData cell : visitedCells) {
                         if (cell.visited) visitedCount++;
                     }
+
                     showToastOnUiThread("Showing " + visitedCount + " visited cells in AR");
                 } else {
                     Log.w(TAG, "No visited cell data received");
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Error processing visited cells: " + e.getMessage());
-                e.printStackTrace();
+                Log.e(TAG, "Error processing visited cells: " + e.getMessage(), e);
                 showToastOnUiThread("Error loading visited cells");
             }
         }
-    }
-
-    private void calculateVisitedCellPositions(ArrayList<GridCellData> cellDataList) {
-        visitedCellPositions.clear();
-        if (cornerAnchors.size() != 4) {
-            Log.e(TAG, "Cannot calculate cell positions without 4 corner anchors");
-            return;
-        }
-        try {
-            List<float[]> corners = new ArrayList<>();
-            for (WrappedAnchor anchor : cornerAnchors) {
-                if (anchor != null && anchor.getAnchor() != null) {
-                    corners.add(anchor.getAnchor().getPose().getTranslation());
-                }
-            }
-            if (corners.size() != 4) {
-                Log.e(TAG, "Could not get all 4 corner positions");
-                return;
-            }
-            float[] orderedCoordinates = orderCornersAsRectangle(corners);
-            if (orderedCoordinates == null) {
-                Log.e(TAG, "Failed to order corners");
-                return;
-            }
-            float[] topLeft = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-            float[] topRight = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-            float[] bottomLeft = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-            float[] bottomRight = Arrays.copyOfRange(orderedCoordinates, 9, 12);
-
-            final int GRID_ROWS = 7;
-            final int GRID_COLS = 7;
-
-            for (GridCellData cellData : cellDataList) {
-                if (cellData.visited) {
-                    float rowRatio = (cellData.row + 0.5f) / GRID_ROWS;
-                    float colRatio = (cellData.col + 0.5f) / GRID_COLS;
-                    float[] topPoint = interpolate(topLeft, topRight, colRatio);
-                    float[] bottomPoint = interpolate(bottomLeft, bottomRight, colRatio);
-                    float[] cellCenter = interpolate(topPoint, bottomPoint, rowRatio);
-                    visitedCellPositions.add(cellCenter);
-                    Log.d(TAG, "Cell " + cellData.cellNumber + " (row=" + cellData.row +
-                            ", col=" + cellData.col + ") at position: [" +
-                            cellCenter[0] + ", " + cellCenter[1] + ", " + cellCenter[2] + "]");
-                }
-            }
-            Log.d(TAG, "Calculated positions for " + visitedCellPositions.size() + " visited cells");
-        } catch (Exception e) {
-            Log.e(TAG, "Error calculating cell positions: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private float[] interpolate(float[] p1, float[] p2, float ratio) {
-        return new float[]{
-                p1[0] + (p2[0] - p1[0]) * ratio,
-                p1[1] + (p2[1] - p1[1]) * ratio,
-                p1[2] + (p2[2] - p1[2]) * ratio
-        };
-    }
-
-    // ✅ ONLY ONE VERSION OF THIS METHOD — THE CORRECT ONE
-    // In HelloArActivity.java
-
-    private void createVisitedCellMeshes(SampleRender render) {
-        try {
-            // Create new list for new meshes
-            List<Mesh> newCellMeshes = new ArrayList<>();
-
-            // --- Existing logic to calculate and create meshes ---
-
-            if (!visitedCellPositions.isEmpty()) {
-                List<float[]> corners = new ArrayList<>();
-                for (WrappedAnchor anchor : cornerAnchors) {
-                    if (anchor != null && anchor.getAnchor() != null) {
-                        corners.add(anchor.getAnchor().getPose().getTranslation());
-                    }
-                }
-                // Logic to get ordered corners and calculate cell vectors (as in original code)
-                if (corners.size() == 4) {
-                    float[] orderedCoordinates = orderCornersAsRectangle(corners);
-                    if (orderedCoordinates != null) {
-                        float[] topLeft = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-                        float[] topRight = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-                        float[] bottomLeft = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-                        final int GRID_ROWS = 7;
-                        final int GRID_COLS = 7;
-                        float[] cellWidthVec = new float[3];
-                        float[] cellHeightVec = new float[3];
-                        for (int i = 0; i < 3; i++) {
-                            cellWidthVec[i] = (topRight[i] - topLeft[i]) / GRID_COLS;
-                            cellHeightVec[i] = (bottomLeft[i] - topLeft[i]) / GRID_ROWS;
-                        }
-                        for (float[] cellCenter : visitedCellPositions) {
-                            Mesh cellMesh = createCellOverlayQuadMesh(cellCenter, cellWidthVec, cellHeightVec, render);
-                            if (cellMesh != null) {
-                                newCellMeshes.add(cellMesh);
-                            }
-                        }
-                    } else {
-                        Log.e(TAG, "Failed to order corners for mesh creation");
-                    }
-                } else {
-                    Log.e(TAG, "Cannot create meshes without 4 corners");
-                }
-            } else {
-                Log.d(TAG, "No visited cell positions to create meshes for");
-            }
-
-            // --- CRITICAL SYNCHRONIZATION AND SWAP ---
-
-            // Use a temporary list to hold the meshes that need to be closed
-            List<Mesh> meshesToClose = new ArrayList<>();
-
-            // Lock the shared list to ensure drawing doesn't happen during the swap
-            synchronized (visitedCellMeshes) {
-                // 1. Move old meshes out for later closing
-                meshesToClose.addAll(visitedCellMeshes);
-                // 2. Clear the drawing list
-                visitedCellMeshes.clear();
-                // 3. Add the new, live meshes
-                visitedCellMeshes.addAll(newCellMeshes);
-            }
-
-            // 4. Safely close the old meshes now that they are no longer in the list
-            for (Mesh mesh : meshesToClose) {
-                try {
-                    mesh.close(); // This frees the OpenGL resource
-                } catch (Exception e) {
-                    Log.w(TAG, "Error closing visited cell mesh: " + e.getMessage());
-                }
-            }
-
-            Log.d(TAG, "Created " + visitedCellMeshes.size() + " visited cell overlay meshes");
-
-        } catch (Exception e) {
-            Log.e(TAG, "Error creating visited cell meshes: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    // ✅ Returns Mesh — safe and clean
-    private Mesh createCellOverlayQuadMesh(float[] center, float[] cellWidth, float[] cellHeight, SampleRender render) {
-        float[] halfWidth = new float[]{cellWidth[0] * 0.45f, cellWidth[1] * 0.45f, cellWidth[2] * 0.45f};
-        float[] halfHeight = new float[]{cellHeight[0] * 0.45f, cellHeight[1] * 0.45f, cellHeight[2] * 0.45f};
-        float yOffset = 0.001f; // Avoid z-fighting with floor
-        float[] vertices = new float[]{
-                center[0] - halfWidth[0] - halfHeight[0], center[1] + yOffset, center[2] - halfWidth[2] - halfHeight[2],
-                center[0] + halfWidth[0] - halfHeight[0], center[1] + yOffset, center[2] + halfWidth[2] - halfHeight[2],
-                center[0] + halfWidth[0] + halfHeight[0], center[1] + yOffset, center[2] + halfWidth[2] + halfHeight[2],
-                center[0] - halfWidth[0] - halfHeight[0], center[1] + yOffset, center[2] - halfWidth[2] - halfHeight[2],
-                center[0] + halfWidth[0] + halfHeight[0], center[1] + yOffset, center[2] + halfWidth[2] + halfHeight[2],
-                center[0] - halfWidth[0] + halfHeight[0], center[1] + yOffset, center[2] - halfWidth[2] + halfHeight[2]
-        };
-        FloatBuffer vertexBuffer = ByteBuffer
-                .allocateDirect(vertices.length * Float.BYTES)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer();
-        vertexBuffer.put(vertices);
-        vertexBuffer.position(0);
-        VertexBuffer vb = new VertexBuffer(render, 3, vertexBuffer);
-        return new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{vb});
-    }
-
-    private float[] orderCornersAsRectangle(List<float[]> corners) {
-        if (corners.size() != 4) {
-            Log.e(TAG, "Must have exactly 4 corners");
-            return null;
-        }
-
-        float centerX = 0, centerY = 0, centerZ = 0;
-        for (float[] corner : corners) {
-            centerX += corner[0];
-            centerY += corner[1];
-            centerZ += corner[2];
-        }
-        centerX /= 4;
-        centerY /= 4;
-        centerZ /= 4;
-
-        final float finalCenterX = centerX;
-        final float finalCenterZ = centerZ;
-
-        float maxDist = 0;
-        int idx1 = 0, idx2 = 0;
-
-        for (int i = 0; i < 4; i++) {
-            for (int j = i + 1; j < 4; j++) {
-                float[] c1 = corners.get(i);
-                float[] c2 = corners.get(j);
-                float dist = (float) Math.sqrt(
-                        Math.pow(c1[0] - c2[0], 2) +
-                                Math.pow(c1[2] - c2[2], 2)
-                );
-                if (dist > maxDist) {
-                    maxDist = dist;
-                    idx1 = i;
-                    idx2 = j;
-                }
-            }
-        }
-
-        float[] corner1 = corners.get(idx1);
-        float[] corner2 = corners.get(idx2);
-        List<float[]> otherCorners = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
-            if (i != idx1 && i != idx2) {
-                otherCorners.add(corners.get(i));
-            }
-        }
-
-        float[] topLeft, topRight, bottomLeft, bottomRight;
-
-        boolean c1IsLeft = corner1[0] < finalCenterX;
-        boolean c1IsTop = corner1[2] < finalCenterZ;
-
-        if (c1IsLeft && c1IsTop) {
-            topLeft = corner1;
-            bottomRight = corner2;
-            boolean oc1IsLeft = otherCorners.get(0)[0] < finalCenterX;
-            if (oc1IsLeft) {
-                bottomLeft = otherCorners.get(0);
-                topRight = otherCorners.get(1);
-            } else {
-                topRight = otherCorners.get(0);
-                bottomLeft = otherCorners.get(1);
-            }
-        } else if (!c1IsLeft && c1IsTop) {
-            topRight = corner1;
-            bottomLeft = corner2;
-            boolean oc1IsLeft = otherCorners.get(0)[0] < finalCenterX;
-            if (oc1IsLeft) {
-                topLeft = otherCorners.get(0);
-                bottomRight = otherCorners.get(1);
-            } else {
-                bottomRight = otherCorners.get(0);
-                topLeft = otherCorners.get(1);
-            }
-        } else if (c1IsLeft && !c1IsTop) {
-            bottomLeft = corner1;
-            topRight = corner2;
-            boolean oc1IsLeft = otherCorners.get(0)[0] < finalCenterX;
-            if (oc1IsLeft) {
-                topLeft = otherCorners.get(0);
-                bottomRight = otherCorners.get(1);
-            } else {
-                bottomRight = otherCorners.get(0);
-                topLeft = otherCorners.get(1);
-            }
-        } else {
-            bottomRight = corner1;
-            topLeft = corner2;
-            boolean oc1IsLeft = otherCorners.get(0)[0] < finalCenterX;
-            if (oc1IsLeft) {
-                bottomLeft = otherCorners.get(0);
-                topRight = otherCorners.get(1);
-            } else {
-                topRight = otherCorners.get(0);
-                bottomLeft = otherCorners.get(1);
-            }
-        }
-
-        float[] ordered = new float[12];
-        System.arraycopy(topLeft, 0, ordered, 0, 3);
-        System.arraycopy(topRight, 0, ordered, 3, 3);
-        System.arraycopy(bottomLeft, 0, ordered, 6, 3);
-        System.arraycopy(bottomRight, 0, ordered, 9, 3);
-        return ordered;
     }
 
     private void handleTapForCornerPlacement(Frame frame, Camera camera) {
@@ -538,7 +250,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
 
-        if (cornerAnchors.size() >= 4) {
+        if (cornerManager.hasAllCorners()) {
             return;
         }
 
@@ -547,84 +259,83 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         for (HitResult hit : frame.hitTest(x, y)) {
             Trackable trackable = hit.getTrackable();
-            if ((trackable instanceof Plane && ((Plane) trackable).isPoseInPolygon(hit.getHitPose())) ||
+            if ((trackable instanceof Plane &&
+                    ((Plane) trackable).isPoseInPolygon(hit.getHitPose())) ||
                     (trackable instanceof PointCloud)) {
 
                 Anchor anchor = hit.createAnchor();
-                cornerAnchors.add(new WrappedAnchor(anchor, trackable));
-                showToastOnUiThread("Corner " + cornerAnchors.size() + " placed");
-                updateInstructions();
-                surfaceView.queueEvent(() -> createCornerConnectionLines(render));
+                boolean added = cornerManager.addCorner(anchor, trackable);
+
+                if (added) {
+                    showToastOnUiThread("Corner " + cornerManager.getCornerCount() + " placed");
+                    updateInstructions();
+                    surfaceView.queueEvent(() -> createCornerConnectionLines());
+                }
                 break;
             }
         }
     }
 
-    private void createCornerConnectionLines(SampleRender render) {
-        if (cornerAnchors.size() < 2) return;
+    private void createCornerConnectionLines() {
+        int cornerCount = cornerManager.getCornerCount();
+        if (cornerCount < 2) return;
 
         List<Mesh> newLineMeshes = new ArrayList<>();
-        List<float[]> corners = new ArrayList<>();
-        for (WrappedAnchor anchor : cornerAnchors) {
-            corners.add(anchor.getAnchor().getPose().getTranslation());
-        }
+        List<float[]> corners = cornerManager.getCornerPositions();
 
-        if (cornerAnchors.size() == 4) {
-            float[] orderedCoordinates = orderCornersAsRectangle(corners);
-            float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-            float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-            float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-            float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
-            try {
-                newLineMeshes.add(createCornerLineMeshObject(p1, p2, render));
-                newLineMeshes.add(createCornerLineMeshObject(p2, p4, render));
-                newLineMeshes.add(createCornerLineMeshObject(p4, p3, render));
-                newLineMeshes.add(createCornerLineMeshObject(p3, p1, render));
-            } catch (Exception e) {
-                Log.e("CornerLine", "Failed to create ordered corner lines: " + e.getMessage());
-                e.printStackTrace();
-            }
-        } else {
-            for (int i = 0; i < cornerAnchors.size() - 1; i++) {
-                float[] p1 = corners.get(i);
-                float[] p2 = corners.get(i + 1);
-                try {
-                    newLineMeshes.add(createCornerLineMeshObject(p1, p2, render));
-                } catch (Exception e) {
-                    Log.e("CornerLine", "Failed to create sequential corner lines: " + e.getMessage());
-                    e.printStackTrace();
+        try {
+            if (cornerManager.hasAllCorners()) {
+                // Create rectangle outline
+                float[] orderedCoordinates = cornerManager.getOrderedCorners();
+                float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
+                float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
+                float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
+                float[] p4 = Arrays.copyOfRange(orderedCoordinates, 9, 12);
+
+                newLineMeshes.add(createLineMesh(p1, p2));
+                newLineMeshes.add(createLineMesh(p2, p4));
+                newLineMeshes.add(createLineMesh(p4, p3));
+                newLineMeshes.add(createLineMesh(p3, p1));
+            } else {
+                // Create sequential lines
+                for (int i = 0; i < cornerCount - 1; i++) {
+                    float[] p1 = corners.get(i);
+                    float[] p2 = corners.get(i + 1);
+                    newLineMeshes.add(createLineMesh(p1, p2));
                 }
             }
-        }
 
-        for (Mesh mesh : cornerLineMeshes) {
-            try {
-                mesh.close();
-            } catch (Exception e) {
-                Log.e(TAG, "Error closing corner line mesh: " + e.getMessage());
-            }
+            // Replace old meshes with new ones (thread-safe)
+            cornerLineMeshManager.replaceMeshes(newLineMeshes);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to create corner lines: " + e.getMessage(), e);
         }
-        cornerLineMeshes.clear();
-        cornerLineMeshes.addAll(newLineMeshes);
     }
 
-    private Mesh createCornerLineMeshObject(float[] start, float[] end, SampleRender render) {
-        float[] lineVertices = {start[0], start[1], start[2], end[0], end[1], end[2]};
+    private Mesh createLineMesh(float[] start, float[] end) {
+        float[] lineVertices = {
+                start[0], start[1], start[2],
+                end[0], end[1], end[2]
+        };
+
         FloatBuffer vertexBuffer = ByteBuffer
                 .allocateDirect(lineVertices.length * Float.BYTES)
                 .order(ByteOrder.nativeOrder())
                 .asFloatBuffer();
         vertexBuffer.put(lineVertices);
         vertexBuffer.position(0);
+
         VertexBuffer vb = new VertexBuffer(render, 3, vertexBuffer);
         return new Mesh(render, PrimitiveMode.LINES, null, new VertexBuffer[]{vb});
     }
 
-    private void drawAnchor(Anchor anchor, SampleRender render) {
+    private void drawAnchor(Anchor anchor) {
         if (anchor.getTrackingState() != TrackingState.TRACKING) return;
 
         anchor.getPose().toMatrix(modelMatrix, 0);
 
+        // Scale the anchor visualization
         float scale = 0.2f;
         float[] scaleMatrix = new float[16];
         Matrix.setIdentityM(scaleMatrix, 0);
@@ -640,7 +351,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         virtualObjectShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
         virtualObjectShader.setTexture("u_AlbedoTexture", virtualObjectAlbedoTexture);
 
-        render.draw(virtualObjectMesh, virtualObjectShader);
+        if (virtualObjectMesh != null) {
+            render.draw(virtualObjectMesh, virtualObjectShader);
+        }
     }
 
     protected boolean settingsMenuClick(MenuItem item) {
@@ -660,6 +373,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             session.close();
             session = null;
         }
+
+        // Clean up all meshes on GL thread
+        if (surfaceView != null) {
+            surfaceView.queueEvent(() -> {
+                cornerLineMeshManager.cleanup();
+                visitedCellMeshManager.cleanup();
+
+                if (pointCloudMesh != null) {
+                    try {
+                        pointCloudMesh.close();
+                    } catch (Exception e) {
+                        Log.w(TAG, "Error closing point cloud mesh: " + e.getMessage());
+                    }
+                }
+                if (virtualObjectMesh != null) {
+                    try {
+                        virtualObjectMesh.close();
+                    } catch (Exception e) {
+                        Log.w(TAG, "Error closing virtual object mesh: " + e.getMessage());
+                    }
+                }
+            });
+        }
+
         super.onDestroy();
     }
 
@@ -672,9 +409,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             String message = null;
 
             try {
-                Availability availability = ArCoreApk.getInstance().checkAvailability(this);
+                ArCoreApk.Availability availability = ArCoreApk.getInstance().checkAvailability(this);
 
-                if (availability != Availability.SUPPORTED_INSTALLED) {
+                if (availability != ArCoreApk.Availability.SUPPORTED_INSTALLED) {
                     switch (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
                         case INSTALL_REQUESTED:
                             installRequested = true;
@@ -742,7 +479,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (!CameraPermissionHelper.hasCameraPermission(this)) {
-            Toast.makeText(this, "Camera permission is needed to run this application", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Camera permission is needed to run this application",
+                    Toast.LENGTH_LONG).show();
             if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
                 CameraPermissionHelper.launchPermissionSettings(this);
             }
@@ -756,6 +494,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
     }
 
+    // Replace your onSurfaceCreated method with this version:
+    @Override
     public void onSurfaceCreated(SampleRender render) {
         this.render = render;
 
@@ -764,23 +504,28 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             backgroundRenderer = new BackgroundRenderer(render);
             virtualSceneFramebuffer = new Framebuffer(render, 1, 1);
 
-            cubemapFilter = new SpecularCubemapFilter(render, CUBEMAP_RESOLUTION, CUBEMAP_NUMBER_OF_IMPORTANCE_SAMPLES);
+            cubemapFilter = new SpecularCubemapFilter(
+                    render, CUBEMAP_RESOLUTION, CUBEMAP_NUMBER_OF_IMPORTANCE_SAMPLES);
 
-            dfgTexture = new Texture(render, Texture.Target.TEXTURE_2D, Texture.WrapMode.CLAMP_TO_EDGE, false);
+            dfgTexture = new Texture(
+                    render, Texture.Target.TEXTURE_2D, Texture.WrapMode.CLAMP_TO_EDGE, false);
 
             final int dfgResolution = 64;
             final int dfgChannels = 2;
             final int halfFloatSize = 2;
 
-            ByteBuffer buffer = ByteBuffer.allocateDirect(dfgResolution * dfgResolution * dfgChannels * halfFloatSize);
+            ByteBuffer buffer = ByteBuffer.allocateDirect(
+                    dfgResolution * dfgResolution * dfgChannels * halfFloatSize);
             try (InputStream is = getAssets().open("models/dfg.raw")) {
                 is.read(buffer.array());
             }
 
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, dfgTexture.getTextureId());
-            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG16F, dfgResolution, dfgResolution, 0, GLES30.GL_RG, GLES30.GL_HALF_FLOAT, buffer);
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG16F,
+                    dfgResolution, dfgResolution, 0, GLES30.GL_RG, GLES30.GL_HALF_FLOAT, buffer);
 
-            pointCloudShader = Shader.createFromAssets(render, "shaders/point_cloud.vert", "shaders/point_cloud.frag", null)
+            pointCloudShader = Shader.createFromAssets(
+                            render, "shaders/point_cloud.vert", "shaders/point_cloud.frag", null)
                     .setVec4("u_Color", new float[]{31.0f / 255.0f, 188.0f / 255.0f, 210.0f / 255.0f, 1.0f})
                     .setFloat("u_PointSize", 5.0f);
 
@@ -788,31 +533,74 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             final VertexBuffer[] pointCloudVertexBuffers = {pointCloudVertexBuffer};
             pointCloudMesh = new Mesh(render, Mesh.PrimitiveMode.POINTS, null, pointCloudVertexBuffers);
 
-            virtualObjectAlbedoTexture = Texture.createFromAsset(render, "models/pawn_albedo.png", Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.SRGB);
-            virtualObjectAlbedoInstantPlacementTexture = Texture.createFromAsset(render, "models/pawn_albedo_instant_placement.png", Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.SRGB);
-            Texture virtualObjectPbrTexture = Texture.createFromAsset(render, "models/pawn_roughness_metallic_ao.png", Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.LINEAR);
+            virtualObjectAlbedoTexture = Texture.createFromAsset(
+                    render, "models/pawn_albedo.png", Texture.WrapMode.CLAMP_TO_EDGE,
+                    Texture.ColorFormat.SRGB);
+            virtualObjectAlbedoInstantPlacementTexture = Texture.createFromAsset(
+                    render, "models/pawn_albedo_instant_placement.png",
+                    Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.SRGB);
+            Texture virtualObjectPbrTexture = Texture.createFromAsset(
+                    render, "models/pawn_roughness_metallic_ao.png",
+                    Texture.WrapMode.CLAMP_TO_EDGE, Texture.ColorFormat.LINEAR);
 
             virtualObjectMesh = Mesh.createFromAsset(render, "models/pawn.obj");
-            virtualObjectShader = Shader.createFromAssets(render, "shaders/environmental_hdr.vert", "shaders/environmental_hdr.frag",
+            virtualObjectShader = Shader.createFromAssets(
+                            render, "shaders/environmental_hdr.vert", "shaders/environmental_hdr.frag",
                             new HashMap<String, String>() {{
-                                put("NUMBER_OF_MIPMAP_LEVELS", Integer.toString(cubemapFilter.getNumberOfMipmapLevels()));
+                                put("NUMBER_OF_MIPMAP_LEVELS",
+                                        Integer.toString(cubemapFilter.getNumberOfMipmapLevels()));
                             }})
                     .setTexture("u_AlbedoTexture", virtualObjectAlbedoTexture)
                     .setTexture("u_RoughnessMetallicAmbientOcclusionTexture", virtualObjectPbrTexture)
                     .setTexture("u_Cubemap", cubemapFilter.getFilteredCubemapTexture())
                     .setTexture("u_DfgTexture", dfgTexture);
 
+            // Line shader for corner connections
             lineShader = Shader.createFromAssets(
-                    render,
-                    "shaders/line.vert",
-                    "shaders/line.frag",
-                    null
-            );
+                    render, "shaders/line.vert", "shaders/line.frag", null);
+
+            // ⭐ NEW: Inline shader for cell overlays with visible green color
+            cellOverlayShader = createCellOverlayShader(render);
 
         } catch (IOException e) {
             Log.e(TAG, "Failed to load shader", e);
             messageSnackbarHelper.showError(this, "Failed to load shader: " + e);
         }
+    }
+
+    // ⭐ NEW METHOD: Create inline shader for cell overlays
+    private Shader createCellOverlayShader(SampleRender render) {
+        // Vertex shader - transforms vertices to screen space
+        String vertexShaderCode =
+                "#version 300 es\n" +
+                        "uniform mat4 u_ModelViewProjection;\n" +
+                        "layout(location = 0) in vec4 a_Position;\n" +
+                        "void main() {\n" +
+                        "    gl_Position = u_ModelViewProjection * a_Position;\n" +
+                        "}\n";
+
+        // Fragment shader - draws semi-transparent green
+        String fragmentShaderCode =
+                "#version 300 es\n" +
+                        "precision mediump float;\n" +
+                        "uniform vec4 u_Color;\n" +
+                        "out vec4 o_FragColor;\n" +
+                        "void main() {\n" +
+                        "    o_FragColor = u_Color;\n" +
+                        "}\n";
+
+        Shader shader = Shader.createFromSource(
+                render,
+                vertexShaderCode,
+                fragmentShaderCode,
+                null
+        );
+
+        // Set a bright green color with 60% opacity
+        shader.setVec4("u_Color", new float[]{0.2f, 0.9f, 0.3f, 0.6f});
+
+        return shader;
+
     }
 
     @Override
@@ -821,12 +609,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         virtualSceneFramebuffer.resize(width, height);
     }
 
+    // ⭐ MODIFIED: Update onDrawFrame to use the new shader
     @Override
     public void onDrawFrame(SampleRender render) {
         if (session == null) return;
 
         if (!hasSetTextureNames) {
-            session.setCameraTextureNames(new int[]{backgroundRenderer.getCameraColorTexture().getTextureId()});
+            session.setCameraTextureNames(
+                    new int[]{backgroundRenderer.getCameraColorTexture().getTextureId()});
             hasSetTextureNames = true;
         }
 
@@ -843,11 +633,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         Camera camera = frame.getCamera();
 
+        // Handle user tap for corner placement
         handleTapForCornerPlacement(frame, camera);
 
+        // Configure background renderer
         try {
-            backgroundRenderer.setUseDepthVisualization(render, depthSettings.depthColorVisualizationEnabled());
-            backgroundRenderer.setUseOcclusion(render, depthSettings.useDepthForOcclusion());
+            backgroundRenderer.setUseDepthVisualization(
+                    render, depthSettings.depthColorVisualizationEnabled());
+            backgroundRenderer.setUseOcclusion(
+                    render, depthSettings.useDepthForOcclusion());
         } catch (IOException e) {
             Log.e(TAG, "Failed to read assets", e);
             messageSnackbarHelper.showError(this, "Failed to read assets: " + e);
@@ -855,24 +649,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         backgroundRenderer.updateDisplayGeometry(frame);
 
+        // Update depth texture if needed
         if (camera.getTrackingState() == TrackingState.TRACKING
-                && (depthSettings.useDepthForOcclusion() || depthSettings.depthColorVisualizationEnabled())) {
+                && (depthSettings.useDepthForOcclusion()
+                || depthSettings.depthColorVisualizationEnabled())) {
             try (Image depthImage = frame.acquireDepthImage16Bits()) {
                 backgroundRenderer.updateCameraDepthTexture(depthImage);
             } catch (NotYetAvailableException e) {
-                // Depth not available
+                // Depth not available yet
             }
         }
 
         trackingStateHelper.updateKeepScreenOnFlag(camera.getTrackingState());
 
+        // Update status message
         String message;
         if (camera.getTrackingState() == TrackingState.PAUSED) {
             message = camera.getTrackingFailureReason() == TrackingFailureReason.NONE
                     ? SEARCHING_PLANE_MESSAGE
                     : TrackingStateHelper.getTrackingFailureReasonString(camera);
         } else if (hasTrackingPlane()) {
-            message = cornerAnchors.isEmpty() ? "Tap to place corners (1 of 4)..." : null;
+            message = cornerManager.getCornerCount() == 0 ? "Tap to place corners (1 of 4)..." : null;
         } else {
             message = SEARCHING_PLANE_MESSAGE;
         }
@@ -883,58 +680,60 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             messageSnackbarHelper.showMessage(this, message);
         }
 
+        // Draw background
         if (frame.getTimestamp() != 0) {
             backgroundRenderer.drawBackground(render);
         }
 
         if (camera.getTrackingState() == TrackingState.PAUSED) return;
 
+        // Get camera matrices
         camera.getProjectionMatrix(projectionMatrix, 0, Z_NEAR, Z_FAR);
         camera.getViewMatrix(viewMatrix, 0);
 
-        for (WrappedAnchor wrappedAnchor : cornerAnchors) {
-            drawAnchor(wrappedAnchor.getAnchor(), render);
+        // Draw corner anchors
+        for (CornerManager.WrappedAnchor wrappedAnchor : cornerManager.getCorners()) {
+            drawAnchor(wrappedAnchor.getAnchor());
         }
 
-        if (!cornerLineMeshes.isEmpty()) {
+        // Draw corner connection lines (white lines)
+        if (!cornerLineMeshManager.isEmpty() && lineShader != null) {
             Matrix.setIdentityM(modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
             lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
-            for (Mesh lineMesh : cornerLineMeshes) {
-                render.draw(lineMesh, lineShader);
-            }
+            cornerLineMeshManager.drawAll(render, lineShader);
         }
 
-        //  Draw visited cell overlays
-        if (!visitedCellMeshes.isEmpty() && lineShader != null) {
+        // ⭐ MODIFIED: Draw visited cell overlays with dedicated shader
+        if (!visitedCellMeshManager.isEmpty() && cellOverlayShader != null) {
             Matrix.setIdentityM(modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
-            lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
+            cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
 
-            // Optional: set color if your line.frag supports u_Color
-            // lineShader.setVec4("u_Color", new float[]{0.3f, 0.8f, 0.3f, 0.6f});
-
+            // Enable blending for semi-transparent overlay
             GLES30.glEnable(GLES30.GL_BLEND);
             GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
 
-            //  CRITICAL: Synchronization added to prevent race condition
-            synchronized (visitedCellMeshes) {
-                for (Mesh cellMesh : visitedCellMeshes) {
-                    render.draw(cellMesh, lineShader);
-                }
-            }
+            // Disable depth writing so cells don't block objects behind them
+            GLES30.glDepthMask(false);
 
+            // Draw all visited cells with the green overlay shader
+            visitedCellMeshManager.drawAll(render, cellOverlayShader);
+
+            // Re-enable depth writing
+            GLES30.glDepthMask(true);
             GLES30.glDisable(GLES30.GL_BLEND);
+
+            // Log for debugging
+            Log.d(TAG, "Drew " + visitedCellMeshManager.getActiveCount() + " visited cells");
         }
     }
 
 
-
-
-
     private boolean hasTrackingPlane() {
         for (Plane plane : session.getAllTrackables(Plane.class)) {
-            if (plane.getTrackingState() == TrackingState.TRACKING && plane.isPoseInPolygon(plane.getCenterPose())) {
+            if (plane.getTrackingState() == TrackingState.TRACKING
+                    && plane.isPoseInPolygon(plane.getCenterPose())) {
                 return true;
             }
         }
@@ -950,7 +749,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         Resources resources = getResources();
         new AlertDialog.Builder(this)
                 .setTitle(R.string.options_title_instant_placement)
-                .setMultiChoiceItems(resources.getStringArray(R.array.instant_placement_options_array),
+                .setMultiChoiceItems(
+                        resources.getStringArray(R.array.instant_placement_options_array),
                         instantPlacementSettingsMenuDialogCheckboxes,
                         (DialogInterface dialog, int which, boolean isChecked) ->
                                 instantPlacementSettingsMenuDialogCheckboxes[which] = isChecked)
@@ -967,7 +767,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
             new AlertDialog.Builder(this)
                     .setTitle(R.string.options_title_with_depth)
-                    .setMultiChoiceItems(resources.getStringArray(R.array.depth_options_array),
+                    .setMultiChoiceItems(
+                            resources.getStringArray(R.array.depth_options_array),
                             depthSettingsMenuDialogCheckboxes,
                             (DialogInterface dialog, int which, boolean isChecked) ->
                                     depthSettingsMenuDialogCheckboxes[which] = isChecked)
@@ -988,13 +789,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void resetSettingsMenuDialogCheckboxes() {
         depthSettingsMenuDialogCheckboxes[0] = depthSettings.useDepthForOcclusion();
         depthSettingsMenuDialogCheckboxes[1] = depthSettings.depthColorVisualizationEnabled();
-        instantPlacementSettingsMenuDialogCheckboxes[0] = instantPlacementSettings.isInstantPlacementEnabled();
+        instantPlacementSettingsMenuDialogCheckboxes[0] =
+                instantPlacementSettings.isInstantPlacementEnabled();
     }
 
     private void applySettingsMenuDialogCheckboxes() {
         depthSettings.setUseDepthForOcclusion(depthSettingsMenuDialogCheckboxes[0]);
         depthSettings.setDepthColorVisualizationEnabled(depthSettingsMenuDialogCheckboxes[1]);
-        instantPlacementSettings.setInstantPlacementEnabled(instantPlacementSettingsMenuDialogCheckboxes[0]);
+        instantPlacementSettings.setInstantPlacementEnabled(
+                instantPlacementSettingsMenuDialogCheckboxes[0]);
         configureSession();
     }
 
@@ -1012,23 +815,5 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             config.setInstantPlacementMode(Config.InstantPlacementMode.DISABLED);
         }
         session.configure(config);
-    }
-
-    class WrappedAnchor {
-        private final Anchor anchor;
-        private final Trackable trackable;
-
-        public WrappedAnchor(Anchor anchor, Trackable trackable) {
-            this.anchor = anchor;
-            this.trackable = trackable;
-        }
-
-        public Anchor getAnchor() {
-            return anchor;
-        }
-
-        public Trackable getTrackable() {
-            return trackable;
-        }
     }
 }

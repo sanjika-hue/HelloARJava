@@ -665,4 +665,20 @@ public class Shader implements Closeable {
     reader.close();
     return builder.toString();
   }
+  /**
+   * Creates a {@link Shader} from the given source code strings.
+   *
+   * @param render The SampleRender instance
+   * @param vertexShaderCode The vertex shader source code as a string
+   * @param fragmentShaderCode The fragment shader source code as a string
+   * @param defines A map of shader precompiler symbols to be defined with the given names and values
+   * @return A new Shader instance
+   */
+  public static Shader createFromSource(
+          SampleRender render,
+          String vertexShaderCode,
+          String fragmentShaderCode,
+          Map<String, String> defines) {
+    return new Shader(render, vertexShaderCode, fragmentShaderCode, defines);
+  }
 }
