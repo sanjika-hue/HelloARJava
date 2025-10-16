@@ -14,18 +14,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- * GridManager - Creates and manages a grid overlay on the AR floor
- * Divides the floor space into cells with visible borders
- */
 public class GridManager {
     private static final String TAG = "GridManager";
 
     // Grid configuration
-    private int gridRows = 4;
-    private int gridCols = 4;
-    private float gapSize = 0.010f; // 5mm gap between cells
-    private float cellHeight = 0.01f; // Lift cells 1.5cm above floor
+    private int gridRows = 10;
+    private int gridCols = 10;
+    private float gapSize = 0.005f; // 5mm gap between cells
+    private float cellHeight = 0.015f; // Lift cells 1.5cm above floor
 
     // Grid bounds (from corners)
     private float[] topLeft;
@@ -348,5 +344,13 @@ public class GridManager {
 
     public int getCols() {
         return gridCols;
+    }
+
+    /**
+     * Check if grid has been initialized with corners
+     */
+    public boolean hasAllCorners() {
+        return topLeft != null && topRight != null &&
+                bottomLeft != null && bottomRight != null;
     }
 }

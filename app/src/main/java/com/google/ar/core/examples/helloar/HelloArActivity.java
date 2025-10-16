@@ -1,8 +1,13 @@
 package com.google.ar.core.examples.helloar;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.DialogInterface;
 import android.content.res.Resources;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.media.Image;
 import java.util.Arrays;
 import java.io.*;
@@ -15,10 +20,14 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.MotionEvent;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.PopupMenu;
+import android.widget.RelativeLayout;
 import android.widget.Toast;
 import android.widget.TextView;
+
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -104,12 +113,20 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private MeshManager cornerLineMeshManager;
     private MeshManager visitedCellMeshManager;
     private VisitedCellManager visitedCellManager;
+
+    // Add these fields with your other managers
     private GridManager gridManager;
+    private boolean gridViewVisible = false;
+    private FrameLayout gridViewContainer;
+    private Custom2DGridView gridView2D;
+
     // Grid configuration - easy to modify
-    private static final int GRID_ROWS = 4;
-    private static final int GRID_COLS = 4;
+    private static final int GRID_ROWS = 10;
+    private static final int GRID_COLS = 10;
     private static final float GRID_GAP_SIZE = 0.005f; // 5mm gap between cells
 
+    // Track visited cells
+    private boolean[] visitedCells = new boolean[GRID_ROWS * GRID_COLS];
 
     // Matrix storage for rendering
     private final float[] modelMatrix = new float[16];
@@ -134,15 +151,40 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         tvDistance = findViewById(R.id.tvDistance);
         surfaceView = findViewById(R.id.surfaceview);
 
+        // ⭐ CREATE 2D grid view container (initially hidden)
+        RelativeLayout rootLayout = findViewById(R.id.root_layout);
+        gridViewContainer = new FrameLayout(this);
+        gridViewContainer.setVisibility(View.GONE);
+        gridViewContainer.setBackgroundColor(Color.parseColor("#F5F5F5"));
+        RelativeLayout.LayoutParams containerParams = new RelativeLayout.LayoutParams(
+                RelativeLayout.LayoutParams.MATCH_PARENT,
+                RelativeLayout.LayoutParams.MATCH_PARENT
+        );
+        rootLayout.addView(gridViewContainer, containerParams);
+
         // Initialize managers
         cornerManager = new CornerManager();
         cornerLineMeshManager = new MeshManager(surfaceView);
         visitedCellMeshManager = new MeshManager(surfaceView);
         floorOverlayMeshManager = new MeshManager(surfaceView);
         visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
-        gridManager = new GridManager(); // ADD THIS LINE
+        gridManager = new GridManager();
+
         // Set up UI listeners
         btnDone.setOnClickListener(v -> onDoneClicked());
+
+        // ⭐ ADD back button handler for 2D grid view
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (gridViewVisible) {
+                    toggle2DGridView();
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                }
+            }
+        });
 
         // Initialize AR helpers
         displayRotationHelper = new DisplayRotationHelper(this);
@@ -236,17 +278,23 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     // REPLACE the onDoneClicked() method with this:
-
-    // REPLACE the onDoneClicked() method with this:
     private void onDoneClicked() {
-        Log.d(TAG, "onDoneClicked: Starting grid visualization...");
+        // Check if grid is already created
+        if (gridManager != null && gridManager.hasAllCorners()) {
+            // Grid exists - toggle 2D view
+            toggle2DGridView();
+            return;
+        }
 
+        // First time - create grid
         if (!cornerManager.hasAllCorners()) {
             Log.w(TAG, "Cannot proceed: only " + cornerManager.getCornerCount() + " corners placed");
             Toast.makeText(this, "Please place exactly 4 corners before pressing Done.",
                     Toast.LENGTH_LONG).show();
             return;
         }
+
+        Log.d(TAG, "onDoneClicked: Starting grid visualization...");
 
         float[] orderedCoordinates = cornerManager.getOrderedCorners();
 
@@ -257,13 +305,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
 
+        // Store coordinates for later use
+        final float[] finalCoordinates = orderedCoordinates.clone();
+
         // Initialize and create grid visualization
         surfaceView.queueEvent(() -> {
             try {
                 // Initialize grid using configured values
                 gridManager.setGridSize(GRID_ROWS, GRID_COLS);
                 gridManager.setGapSize(GRID_GAP_SIZE);
-                gridManager.initialize(orderedCoordinates);
+                gridManager.initialize(finalCoordinates);
                 gridManager.createMeshes(render);
 
                 Log.d(TAG, "Grid visualization created: " +
@@ -274,6 +325,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     Toast.makeText(this, "Grid visualization created!", Toast.LENGTH_SHORT).show();
                     tvInstructions.setText("Grid overlay active - " +
                             GRID_ROWS + "x" + GRID_COLS + " cells");
+                    btnDone.setText("2D View");
+
+                    // Initialize 2D grid view
+                    initialize2DGridView(finalCoordinates);
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Failed to create grid: " + e.getMessage(), e);
@@ -282,6 +337,147 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 );
             }
         });
+    }
+
+    private void initialize2DGridView(float[] orderedCoordinates) {
+        // Convert coordinates to Pose objects for GridView
+        float[] identityRotation = new float[]{0f, 0f, 0f, 1f};
+        Pose[] boundaryPoses = new Pose[4];
+        boundaryPoses[0] = new Pose(Arrays.copyOfRange(orderedCoordinates, 0, 3), identityRotation);
+        boundaryPoses[1] = new Pose(Arrays.copyOfRange(orderedCoordinates, 3, 6), identityRotation);
+        boundaryPoses[2] = new Pose(Arrays.copyOfRange(orderedCoordinates, 6, 9), identityRotation);
+        boundaryPoses[3] = new Pose(Arrays.copyOfRange(orderedCoordinates, 9, 12), identityRotation);
+
+        // Create custom GridView that matches our grid configuration
+        gridView2D = new Custom2DGridView(this, boundaryPoses);
+
+        // Add "Back to AR" button to grid container
+        Button btnBackToAR = new Button(this);
+        btnBackToAR.setText("Back to AR View");
+        btnBackToAR.setBackgroundColor(Color.parseColor("#2196F3"));
+        btnBackToAR.setTextColor(Color.WHITE);
+        FrameLayout.LayoutParams buttonParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+        );
+        buttonParams.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL;
+        buttonParams.bottomMargin = 50;
+        btnBackToAR.setLayoutParams(buttonParams);
+        btnBackToAR.setOnClickListener(v -> toggle2DGridView());
+
+        gridViewContainer.removeAllViews();
+        gridViewContainer.addView(gridView2D);
+        gridViewContainer.addView(btnBackToAR);
+    }
+
+    private void toggle2DGridView() {
+        // Safety check
+        if (gridViewContainer == null) {
+            Log.e(TAG, "Grid view container not initialized");
+            Toast.makeText(this, "Grid view not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        gridViewVisible = !gridViewVisible;
+
+        if (gridViewVisible) {
+            // Show 2D grid view
+            gridViewContainer.setVisibility(View.VISIBLE);
+            surfaceView.setVisibility(View.GONE);
+            btnDone.setVisibility(View.GONE);
+            tvInstructions.setVisibility(View.GONE);
+
+            // Update 2D view with current visited state
+            if (gridView2D != null) {
+                gridView2D.updateVisitedCells(visitedCells);
+            }
+
+            Log.d(TAG, "Switched to 2D grid view");
+        } else {
+            // Show AR view
+            gridViewContainer.setVisibility(View.GONE);
+            surfaceView.setVisibility(View.VISIBLE);
+            btnDone.setVisibility(View.VISIBLE);
+            tvInstructions.setVisibility(View.VISIBLE);
+
+            // Get updated visited cells from 2D view
+            if (gridView2D != null) {
+                visitedCells = gridView2D.getVisitedState();
+
+                // Update AR meshes with visited cells
+                surfaceView.queueEvent(() -> updateGridMeshColors());
+            }
+
+            Log.d(TAG, "Switched to AR view");
+        }
+    }
+
+    // Update grid mesh colors based on visited state
+    private void updateGridMeshColors() {
+        try {
+            // Recreate meshes - this will be called on GL thread
+            if (gridManager != null && render != null) {
+                gridManager.clearMeshes();
+                gridManager.createMeshes(render);
+
+                int visitedCount = 0;
+                for (boolean visited : visitedCells) {
+                    if (visited) visitedCount++;
+                }
+
+                Log.d(TAG, "Updated grid meshes: " + visitedCount + " cells marked as visited");
+
+                final int count = visitedCount;
+                runOnUiThread(() -> {
+                    Toast.makeText(HelloArActivity.this,
+                            count + " cells marked as visited", Toast.LENGTH_SHORT).show();
+                });
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error updating grid mesh colors: " + e.getMessage(), e);
+        }
+    }
+
+    // Draw a single grid cell with specified color
+    private void drawSingleCell(GridManager.GridCell cell,
+                                com.google.ar.core.examples.helloar.common.samplerender.Shader shader,
+                                float[] color) {
+        try {
+            // Create mesh for single cell
+            float[] vertices = {
+                    // Triangle 1: topLeft -> bottomRight -> topRight
+                    cell.topLeft[0], cell.topLeft[1], cell.topLeft[2],
+                    cell.bottomRight[0], cell.bottomRight[1], cell.bottomRight[2],
+                    cell.topRight[0], cell.topRight[1], cell.topRight[2],
+
+                    // Triangle 2: topLeft -> bottomLeft -> bottomRight
+                    cell.topLeft[0], cell.topLeft[1], cell.topLeft[2],
+                    cell.bottomLeft[0], cell.bottomLeft[1], cell.bottomLeft[2],
+                    cell.bottomRight[0], cell.bottomRight[1], cell.bottomRight[2]
+            };
+
+            FloatBuffer buffer = ByteBuffer
+                    .allocateDirect(vertices.length * Float.BYTES)
+                    .order(ByteOrder.nativeOrder())
+                    .asFloatBuffer();
+            buffer.put(vertices).position(0);
+
+            VertexBuffer vb = new VertexBuffer(render, 3, buffer);
+            Mesh cellMesh = new Mesh(render, PrimitiveMode.TRIANGLES, null, new VertexBuffer[]{vb});
+
+            GLES30.glEnable(GLES30.GL_BLEND);
+            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+
+            shader.setVec4("u_Color", color);
+            render.draw(cellMesh, shader);
+
+            cellMesh.close();
+
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+        } catch (Exception e) {
+            Log.w(TAG, "Error drawing single cell: " + e.getMessage());
+        }
     }
 
 //
@@ -480,6 +676,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         super.onDestroy();
     }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -794,9 +991,22 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
                 lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
 
-                // Draw cells with semi-transparent light gray
-                float[] cellColor = {0.7f, 0.7f, 0.7f, 0.3f}; // Light gray, 30% opacity
-                gridManager.drawCells(render, cellOverlayShader, cellColor);
+                // Draw cells individually with different colors based on visited state
+                List<GridManager.GridCell> allCells = gridManager.getAllCells();
+                for (int i = 0; i < allCells.size(); i++) {
+                    GridManager.GridCell cell = allCells.get(i);
+
+                    // Determine color based on visited state
+                    float[] cellColor;
+                    if (i < visitedCells.length && visitedCells[i]) {
+                        cellColor = new float[]{0.3f, 0.8f, 0.4f, 0.7f}; // Green for visited
+                    } else {
+                        cellColor = new float[]{0.7f, 0.7f, 0.7f, 0.3f}; // Light gray for unvisited
+                    }
+
+                    // Draw individual cell
+                    drawSingleCell(cell, cellOverlayShader, cellColor);
+                }
 
                 // Draw borders with white
                 float[] borderColor = {1.0f, 1.0f, 1.0f, 1.0f}; // White, solid
@@ -1014,4 +1224,232 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         session.configure(config);
     }
+
+    // ============================================================================
+// Custom 2D Grid View - Inner class inside HelloArActivity
+// Place this at the end of HelloArActivity class, before the final closing brace
+// ============================================================================
+
+    /**
+     * Custom2DGridView - Interactive 2D grid overlay for marking visited cells
+     * This is an inner class of HelloArActivity
+     */
+    private class Custom2DGridView extends View {
+        private final Pose[] boundaryPoses;
+        private final List<GridCell2D> cells = new ArrayList<>();
+        private Paint borderPaint;
+        private Paint textPaint;
+        private float cellViewSize;
+
+        /**
+         * Represents a single cell in the 2D grid view
+         */
+        private static class GridCell2D {
+            public final int cellNumber;
+            public final int row;
+            public final int col;
+            public boolean visited;
+            public Paint fillPaint;
+            public RectF rect;
+
+            public GridCell2D(int cellNumber, int row, int col, RectF rect) {
+                this.cellNumber = cellNumber;
+                this.row = row;
+                this.col = col;
+                this.rect = rect;
+                this.visited = false;
+                this.fillPaint = new Paint();
+                this.fillPaint.setColor(Color.WHITE);
+                this.fillPaint.setStyle(Paint.Style.FILL);
+                this.fillPaint.setShadowLayer(5f, 0f, 0f, Color.GRAY);
+            }
+
+            /**
+             * Toggle the visited state of this cell
+             */
+            public void toggleVisited() {
+                this.visited = !this.visited;
+                this.fillPaint.setColor(visited ? Color.parseColor("#4CAF50") : Color.WHITE);
+            }
+        }
+
+        /**
+         * Constructor
+         * @param context Android context
+         * @param poses Array of 4 boundary poses (corners)
+         */
+        public Custom2DGridView(Context context, Pose[] poses) {
+            super(context);
+            this.boundaryPoses = poses;
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null); // Enable shadow rendering
+            init();
+        }
+
+        /**
+         * Initialize paints for drawing
+         */
+        private void init() {
+            // Border paint for cell outlines
+            borderPaint = new Paint();
+            borderPaint.setColor(Color.DKGRAY);
+            borderPaint.setStyle(Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(3f);
+
+            // Text paint for cell numbers
+            textPaint = new Paint();
+            textPaint.setColor(Color.BLACK);
+            textPaint.setTextAlign(Paint.Align.CENTER);
+            textPaint.setFakeBoldText(true);
+        }
+
+        /**
+         * Update visited state from external array
+         * @param visitedState Boolean array indicating which cells are visited
+         */
+        public void updateVisitedCells(boolean[] visitedState) {
+            for (int i = 0; i < cells.size() && i < visitedState.length; i++) {
+                GridCell2D cell = cells.get(i);
+                if (cell.visited != visitedState[i]) {
+                    cell.visited = visitedState[i];
+                    cell.fillPaint.setColor(cell.visited ? Color.parseColor("#4CAF50") : Color.WHITE);
+                }
+            }
+            invalidate(); // Request redraw
+        }
+
+        /**
+         * Get current visited state of all cells
+         * @return Boolean array indicating which cells are visited
+         */
+        public boolean[] getVisitedState() {
+            boolean[] state = new boolean[GRID_ROWS * GRID_COLS];
+            for (int i = 0; i < cells.size() && i < state.length; i++) {
+                state[i] = cells.get(i).visited;
+            }
+            return state;
+        }
+
+        /**
+         * Called when view size changes
+         * Generates the grid layout based on available space
+         */
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            super.onSizeChanged(w, h, oldw, oldh);
+            if (w == 0 || h == 0) return;
+
+            // Calculate grid dimensions to fit in the view
+            int padding = 40;
+            int gridSize = Math.min(w, h) - 2 * padding;
+
+            float startX = (w - gridSize) / 2f;
+            float startY = (h - gridSize) / 2f;
+
+            cellViewSize = (float) gridSize / GRID_COLS;
+            textPaint.setTextSize(cellViewSize / 4);
+
+            generate2DGrid(startX, startY, cellViewSize);
+        }
+
+        /**
+         * Generate the 2D grid layout
+         * @param startX Starting X coordinate
+         * @param startY Starting Y coordinate
+         * @param cellSize Size of each cell
+         */
+        private void generate2DGrid(float startX, float startY, float cellSize) {
+            cells.clear();
+            int cellCount = 0;
+
+            for (int row = 0; row < GRID_ROWS; row++) {
+                for (int col = 0; col < GRID_COLS; col++) {
+                    // Calculate cell boundaries
+                    float left = startX + col * cellSize;
+                    float top = startY + row * cellSize;
+                    float right = left + cellSize;
+                    float bottom = top + cellSize;
+
+                    RectF rect = new RectF(left, top, right, bottom);
+                    GridCell2D cell = new GridCell2D(cellCount + 1, row, col, rect);
+
+                    // Apply current visited state if available
+                    if (cellCount < visitedCells.length && visitedCells[cellCount]) {
+                        cell.visited = true;
+                        cell.fillPaint.setColor(Color.parseColor("#4CAF50"));
+                    }
+
+                    cells.add(cell);
+                    cellCount++;
+                }
+            }
+            Log.i(TAG, "2D Grid of " + GRID_ROWS * GRID_COLS + " cells generated.");
+        }
+
+        /**
+         * Draw the grid
+         */
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+
+            if (cells.isEmpty()) {
+                canvas.drawText("Generating Grid...", getWidth() / 2f, getHeight() / 2f, textPaint);
+                return;
+            }
+
+            // Draw each cell
+            for (GridCell2D cell : cells) {
+                // Draw filled rectangle
+                canvas.drawRoundRect(cell.rect, 10f, 10f, cell.fillPaint);
+
+                // Draw border
+                canvas.drawRoundRect(cell.rect, 10f, 10f, borderPaint);
+
+                // Draw cell number
+                String num = String.valueOf(cell.cellNumber);
+                float x = cell.rect.centerX();
+                float textHeight = textPaint.descent() - textPaint.ascent();
+                float y = cell.rect.centerY() + (textHeight / 2) - textPaint.descent();
+
+                canvas.drawText(num, x, y, textPaint);
+            }
+        }
+
+        /**
+         * Handle touch events to toggle cell visited state
+         */
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                float touchX = event.getX();
+                float touchY = event.getY();
+
+                // Check if touch is within any cell
+                for (GridCell2D cell : cells) {
+                    if (cell.rect.contains(touchX, touchY)) {
+                        // Toggle visited state
+                        cell.toggleVisited();
+
+                        // Update the global visited state array
+                        int cellIndex = cell.row * GRID_COLS + cell.col;
+                        if (cellIndex < visitedCells.length) {
+                            visitedCells[cellIndex] = cell.visited;
+                        }
+
+                        // Request redraw
+                        invalidate();
+
+                        // Show feedback
+                        Toast.makeText(getContext(), "Cell " + cell.cellNumber +
+                                (cell.visited ? " Visited!" : " Unvisited!"), Toast.LENGTH_SHORT).show();
+                        return true;
+                    }
+                }
+            }
+            return super.onTouchEvent(event);
+        }
+    }
+
+// End of Custom2DGridView class
+// This goes inside HelloArActivity, before the final closing brace
 }
