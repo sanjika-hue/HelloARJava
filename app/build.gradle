@@ -10,6 +10,12 @@ android {
         targetSdkVersion 36
         versionCode 1
         versionName '1.0'
+        multiDexEnabled true
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments = ["room.schemaLocation": "$projectDir/schemas".toString()]
+            }
+        }
     }
 
     compileOptions {
@@ -30,6 +36,9 @@ android {
             force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.10'
             force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.10'
         }
+    }
+    dexOptions {
+        javaMaxHeapSize "4g"
     }
 }
 
