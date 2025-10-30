@@ -1,21 +1,17 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 android {
     namespace "com.google.ar.core.examples.helloar"
-    compileSdkVersion 36
+    compileSdkVersion 34
 
     defaultConfig {
         applicationId "com.google.ar.core.examples.helloar"
         minSdkVersion 24
-        targetSdkVersion 36
+        targetSdkVersion 34
         versionCode 1
         versionName '1.0'
         multiDexEnabled true
-        javaCompileOptions {
-            annotationProcessorOptions {
-                arguments = ["room.schemaLocation": "$projectDir/schemas".toString()]
-            }
-        }
     }
 
     compileOptions {
@@ -29,30 +25,32 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
-    // ⭐ ADD THIS to fix Kotlin stdlib conflicts
+
+    // ✅ Force Kotlin version everywhere
     configurations.all {
         resolutionStrategy {
-            force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.10'
-            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.10'
-            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.10'
+            force "org.jetbrains.kotlin:kotlin-stdlib:1.8.20"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.20"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.20"
         }
-    }
-    dexOptions {
-        javaMaxHeapSize "4g"
     }
 }
 
 dependencies {
+    // ✅ AR Core
+    implementation 'com.google.ar:core:1.41.0'
 
-    implementation 'com.google.ar:core:1.50.0'
+    // ✅ AndroidX
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.9.0'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'androidx.fragment:fragment:1.6.1'
+
+    // ✅ OBJ
     implementation 'de.javagl:obj:0.4.0'
-    implementation 'androidx.appcompat:appcompat:1.1.0'
-    implementation 'com.google.android.material:material:1.1.0'
-    implementation 'androidx.fragment:fragment:1.5.7'
 
-    // Sceneform fork
-   // implementation 'com.gorisse.thomas.sceneform:core:1.23.0'
- //   implementation 'com.gorisse.thomas.sceneform:ux:1.23.0'
+    // ✅ This will add correct Kotlin version automatically
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.8.20"
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
-    implementation libs.assets
 }

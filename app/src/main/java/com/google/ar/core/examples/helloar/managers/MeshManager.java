@@ -99,6 +99,7 @@ public class MeshManager {
         surfaceView.queueEvent(this::disposeInvalidMeshes);
     }
 
+
     /**
      * Draw all valid meshes (safe to call from render thread)
      */

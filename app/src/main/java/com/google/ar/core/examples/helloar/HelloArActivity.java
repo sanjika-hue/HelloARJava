@@ -1,5 +1,6 @@
 package com.google.ar.core.examples.helloar;
-
+import android.os.Environment;
+import android.media.MediaScannerConnection;
 import android.graphics.Bitmap;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
@@ -62,7 +63,15 @@ import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.widget.ImageView;
+import android.widget.EditText;
 
+// Add these with your other imports at the top
+import okhttp3.*;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Bitmap.CompressFormat;
@@ -70,6 +79,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import android.graphics.BitmapFactory;
 
 /**
  * Refactored HelloArActivity with proper separation of concerns
@@ -77,7 +87,7 @@ import java.io.IOException;
 public class HelloArActivity extends AppCompatActivity implements SampleRender.Renderer {
 
     private static final String TAG = HelloArActivity.class.getSimpleName();
-   // private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
+    // private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
 
     private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
     private static final int GRID_NAVIGATION_REQUEST = 1001;
@@ -95,7 +105,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private int currentStableCell = -1;
     private long stableStartTime = 0;
     private static final long STABLE_DURATION_MS = 2000;
-
+    private boolean isCaptureInProgress = false;
     // AR Session and rendering
     private GLSurfaceView surfaceView;
     private Session session;
@@ -109,7 +119,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private float currentCameraAngle = 0f;
 
     // Helpers
-    private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
+    //private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
+    private final SafeMessageHelper messageSnackbarHelper = new SafeMessageHelper();
     private DisplayRotationHelper displayRotationHelper;
     private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
     private TapHelper tapHelper;
@@ -135,7 +146,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private SpecularCubemapFilter cubemapFilter;
     private long lastPointCloudTimestamp = 0;
     //private Button btnCapture;
-   // private ImageButton btnCapture;
+    // private ImageButton btnCapture;
     private Button btnCapture;
 
     // Settings
@@ -146,7 +157,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // Managers - NEW!
     private CornerManager cornerManager;
-   // final Image finalImage = image;
+    // final Image finalImage = image;
 
     private MeshManager cornerLineMeshManager;
     private MeshManager visitedCellMeshManager;
@@ -159,9 +170,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private Custom2DGridView gridView2D;
 
     // Grid configuration - easy to modify
-    private static final int GRID_ROWS = 5;
-    private static final int GRID_COLS = 5;
-    private static final float GRID_GAP_SIZE = 0.005f; // 5mm gap between cells
+    private static final int GRID_ROWS = 4;
+    private static final int GRID_COLS = 4;
+    private static final float GRID_GAP_SIZE = 0.01f ; //0.005f; // 5mm gap between cells
 
     // Track visited cells
     private boolean[] visitedCells = new boolean[GRID_ROWS * GRID_COLS];
@@ -196,44 +207,92 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final long CAPTURE_CHECK_INTERVAL = 250;
 
 
+    private long lastCaptureTime = 0;
+    private enum InspectionMode {
+        FLOOR,
+        WALL,
+        VIRTUAL_WALL,
+        NONE
+    }
+    private InspectionMode currentMode = InspectionMode.NONE;
 
 
+    private Button btnInspectFloor;
+    private Button btnInspectWall;
+    private LinearLayout modeSelectionContainer;
 
+    // ===== VIRTUAL WALL FIELDS =====
+    private Button btnInspectVirtualWall;
+    private androidx.cardview.widget.CardView cardHeightInput;
+    private EditText etRoomHeight;
+    private Button btnConfirmHeight;
+    private float userInputRoomHeight = 2.5f; // Default, but user MUST confirm
+    private float[] storedFloorCorners = null;
+    // Add these fields with your other private fields
+    private static final String SERVER_URL = "http://192.168.1.40:8000";// ⚠️ CHANGE TO YOUR LAPTOP IP!
+    private OkHttpClient httpClient;
     // Update your onCreate() method - ADD THIS SECTION:
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // 1️⃣ Initialize basic mode selection views
+        modeSelectionContainer = findViewById(R.id.modeSelectionContainer);
+        btnInspectFloor = findViewById(R.id.btnInspectFloor);
+        btnInspectWall = findViewById(R.id.btnInspectWall);
 
-        // Initialize capture button
+        // Bind Virtual Wall UI
+        btnInspectVirtualWall = findViewById(R.id.btnInspectVirtualWall);
+        cardHeightInput = findViewById(R.id.cardHeightInput);
+        etRoomHeight = findViewById(R.id.etRoomHeight);
+        btnConfirmHeight = findViewById(R.id.btnConfirmHeight);
+        btnInspectVirtualWall.setOnClickListener(v -> selectInspectionMode(InspectionMode.VIRTUAL_WALL));
+        btnConfirmHeight.setOnClickListener(v -> onHeightConfirmed());
+
+        // 2️⃣ Initialize capture-related UI elements
         btnCapture = findViewById(R.id.btnCapture);
-        btnCapture.setVisibility(View.GONE);
-        btnCapture.setText("START");
-        btnCapture.setBackgroundColor(Color.parseColor("#2196F3")); // Blue
-        btnCapture.setOnClickListener(v -> toggleCaptureMode());
-
-        // Initialize UI
         btnDone = findViewById(R.id.btnDone);
-
         tvInstructions = findViewById(R.id.tvInstructions);
         tvDistance = findViewById(R.id.tvDistance);
         surfaceView = findViewById(R.id.surfaceview);
 
-        // â­ NEW: Initialize professional UI elements
+        // 3️⃣ Initialize additional controls + professional UI elements
         cardGridInfo = findViewById(R.id.cardGridInfo);
         tvGridSize = findViewById(R.id.tvGridSize);
         tvVisitedCount = findViewById(R.id.tvVisitedCount);
         cardDistance = findViewById(R.id.cardDistance);
         cornerHintsContainer = findViewById(R.id.cornerHintsContainer);
 
-        // Initialize corner indicators
+        // Corner indicators
         cornerIndicators[0] = findViewById(R.id.cornerIndicator1);
         cornerIndicators[1] = findViewById(R.id.cornerIndicator2);
         cornerIndicators[2] = findViewById(R.id.cornerIndicator3);
         cornerIndicators[3] = findViewById(R.id.cornerIndicator4);
 
-        // â­ CREATE 2D grid view container (initially hidden)
+        // View captured images button
+        Button btnViewCaptured = findViewById(R.id.btnViewCaptured);
+
+        // 4️⃣ Hide non-mode views initially
+        modeSelectionContainer.setVisibility(View.VISIBLE);
+        btnDone.setVisibility(View.GONE);
+        btnCapture.setVisibility(View.GONE);
+        cardGridInfo.setVisibility(View.GONE);
+        tvInstructions.setVisibility(View.GONE);
+
+        btnCapture.setText("START");
+        btnCapture.setBackgroundColor(Color.parseColor("#2196F3"));
+
+        btnViewCaptured.setVisibility(View.GONE);
+
+        // 5️⃣ Set listeners
+        btnInspectFloor.setOnClickListener(v -> selectInspectionMode(InspectionMode.FLOOR));
+        btnInspectWall.setOnClickListener(v -> selectInspectionMode(InspectionMode.WALL));
+        btnCapture.setOnClickListener(v -> toggleCaptureMode());
+        btnDone.setOnClickListener(v -> onDoneClicked());
+        btnViewCaptured.setOnClickListener(v -> showCapturedImages());
+
+        // 6️⃣ Create 2D grid view container (initially hidden)
         RelativeLayout rootLayout = findViewById(R.id.root_layout);
         gridViewContainer = new FrameLayout(this);
         gridViewContainer.setVisibility(View.GONE);
@@ -244,8 +303,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         );
         rootLayout.addView(gridViewContainer, containerParams);
 
-
-        // Initialize managers
+        // 7️⃣ Initialize managers
         cornerManager = new CornerManager();
         cornerLineMeshManager = new MeshManager(surfaceView);
         visitedCellMeshManager = new MeshManager(surfaceView);
@@ -253,11 +311,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
         gridManager = new GridManager();
 
-        // Set up UI listeners
-        btnDone.setOnClickListener(v -> onDoneClicked());
+        httpClient = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .build();
+
         createAngleIndicator();
 
-        // â­ ADD back button handler for 2D grid view
+        // Back button behavior
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
@@ -270,20 +332,19 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
 
-        // Initialize AR helpers
+        // AR Touch helper
         displayRotationHelper = new DisplayRotationHelper(this);
         tapHelper = new TapHelper(this);
         surfaceView.setOnTouchListener(tapHelper);
 
-        // Initialize renderer
+        // Renderer setup
         render = new SampleRender(surfaceView, this, getAssets());
         installRequested = false;
 
-        // Initialize settings
+        // Settings setup
         depthSettings.onCreate(this);
         instantPlacementSettings.onCreate(this);
 
-        // Set up settings button
         ImageButton settingsButton = findViewById(R.id.settings_button);
         settingsButton.setOnClickListener(v -> {
             PopupMenu popup = new PopupMenu(HelloArActivity.this, v);
@@ -294,6 +355,138 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         updateInstructions();
     }
+
+    /*   private void showCapturedImages() {
+           File imgDir = new File(getExternalFilesDir(null), "cell_images");
+           if (!imgDir.exists() || imgDir.list() == null || imgDir.list().length == 0) {
+               Toast.makeText(this, "No images captured yet", Toast.LENGTH_SHORT).show();
+               return;
+           }
+
+           File[] imageFiles = imgDir.listFiles((dir, name) -> name.endsWith(".jpg"));
+           if (imageFiles == null || imageFiles.length == 0) {
+               Toast.makeText(this, "No images found", Toast.LENGTH_SHORT).show();
+               return;
+           }
+
+           // Sort by name (chronological)
+           Arrays.sort(imageFiles, (f1, f2) -> f1.getName().compareTo(f2.getName()));
+
+           // Build list of image paths
+           List<String> imagePaths = new ArrayList<>();
+           for (File f : imageFiles) {
+               imagePaths.add(f.getAbsolutePath());
+           }
+
+           // Show image picker dialog
+           AlertDialog.Builder builder =
+                   new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert);
+
+           builder.setTitle("Select an image to view");
+           builder.setItems(
+                   imagePaths.stream()
+                           .map(path -> new File(path).getName())
+                           .toArray(String[]::new),
+                   (dialog, which) -> {
+                       String selectedPath = imagePaths.get(which);
+                       showFullScreenImage(selectedPath);
+                   }
+           );
+           builder.setNegativeButton("Cancel", null);
+           builder.show();
+       }*/
+    private void showCapturedImages() {
+        // ✅ Scan the SAME public folder where images are saved
+        File imgDir = new File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                "AR_Floor_Inspection"
+        );
+
+        if (!imgDir.exists() || imgDir.list() == null || imgDir.list().length == 0) {
+            Toast.makeText(this, "No images captured yet", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        File[] imageFiles = imgDir.listFiles((dir, name) -> name.endsWith(".jpg"));
+        if (imageFiles == null || imageFiles.length == 0) {
+            Toast.makeText(this, "No images found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // ✅ SORT BY LAST MODIFIED TIME (most recent first)
+        Arrays.sort(imageFiles, (f1, f2) -> Long.compare(f2.lastModified(), f1.lastModified()));
+
+        List<String> imagePaths = new ArrayList<>();
+        for (File f : imageFiles) {
+            imagePaths.add(f.getAbsolutePath());
+        }
+
+        // ✅ FIX: Use android.app.AlertDialog (NOT androidx)
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        builder.setTitle("Select an image to view (most recent first)");
+        builder.setItems(
+                imagePaths.stream()
+                        .map(path -> {
+                            File f = new File(path);
+                            // Show: "cell_005 • Oct 24, 14:30"
+                            String name = f.getName();
+                            String[] parts = name.split("_");
+                            if (parts.length >= 4) {
+                                String cellNum = parts[1];
+                                String date = parts[2]; // yyyymmdd
+                                String time = parts[3].replace(".jpg", ""); // hhmmss
+                                return String.format("Cell %s • %s-%s %s:%s",
+                                        Integer.parseInt(cellNum),
+                                        date.substring(4,6), date.substring(6,8), // mm-dd
+                                        time.substring(0,2), time.substring(2,4)  // hh:mm
+                                );
+                            }
+                            return name;
+                        })
+                        .toArray(String[]::new),
+                (dialog, which) -> showFullScreenImage(imagePaths.get(which))
+        );
+        builder.setNegativeButton("Cancel", null);
+        builder.show();
+    }
+
+    private void showFullScreenImage(String imagePath) {
+        ImageView imageView = new ImageView(this);
+        imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        imageView.setBackgroundColor(Color.BLACK);
+
+        try {
+            Bitmap bitmap = BitmapFactory.decodeFile(imagePath);
+            if (bitmap != null) {
+                imageView.setImageBitmap(bitmap);
+            } else {
+                Toast.makeText(this, "Failed to load image", Toast.LENGTH_SHORT).show();
+                return;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading image", e);
+            Toast.makeText(this, "Error loading image", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // ✅ FIX: Use android.app.AlertDialog (NOT androidx)
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        builder.setView(imageView);
+        builder.setPositiveButton("Close", null);
+
+        // ✅ Make dialog fill screen
+        android.app.AlertDialog dialog = builder.create();
+        dialog.show();
+
+        // Optional: Make image fill more of the screen
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.MATCH_PARENT
+            );
+        }
+    }
+
     private void createAngleIndicator() {
         RelativeLayout rootLayout = findViewById(R.id.root_layout);
 
@@ -320,15 +513,71 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         tvCameraAngle.setText("--°");
         angleContainer.addView(tvCameraAngle);
 
-        // Status text
+        // ✅ Status text - will update dynamically based on mode
         TextView tvAngleStatus = new TextView(this);
         tvAngleStatus.setTextColor(Color.parseColor("#FFEB3B")); // Yellow
         tvAngleStatus.setTextSize(12);
-        tvAngleStatus.setText("Camera Angle (90° = Perfect)");
+        tvAngleStatus.setText("Camera Angle");
         angleContainer.addView(tvAngleStatus);
 
         rootLayout.addView(angleContainer, containerParams);
         angleIndicator = angleContainer;
+    }
+    private void selectInspectionMode(InspectionMode mode) {
+        currentMode = mode;
+        modeSelectionContainer.setVisibility(View.GONE);
+        tvInstructions.setVisibility(View.VISIBLE);
+        btnDone.setVisibility(View.VISIBLE);
+
+        if (mode == InspectionMode.FLOOR) {
+            btnInspectFloor.setBackgroundColor(Color.parseColor("#4CAF50"));
+            btnInspectWall.setBackgroundColor(Color.parseColor("#757575"));
+            btnInspectVirtualWall.setBackgroundColor(Color.parseColor("#757575"));
+            tvInstructions.setText("🏢 FLOOR MODE: Tap to place corner 1 of 4");
+            cardHeightInput.setVisibility(View.GONE);
+        } else if (mode == InspectionMode.WALL) {
+            btnInspectWall.setBackgroundColor(Color.parseColor("#4CAF50"));
+            btnInspectFloor.setBackgroundColor(Color.parseColor("#757575"));
+            btnInspectVirtualWall.setBackgroundColor(Color.parseColor("#757575"));
+            tvInstructions.setText("🧱 WALL MODE: Tap to place corner 1 of 4");
+            cardHeightInput.setVisibility(View.GONE);
+        } else if (mode == InspectionMode.VIRTUAL_WALL) {
+            btnInspectVirtualWall.setBackgroundColor(Color.parseColor("#4CAF50"));
+            btnInspectFloor.setBackgroundColor(Color.parseColor("#757575"));
+            btnInspectWall.setBackgroundColor(Color.parseColor("#757575"));
+            tvInstructions.setText("📐 VIRTUAL WALL: Enter room height below");
+            cardHeightInput.setVisibility(View.VISIBLE);
+        }
+
+        // Reset state
+        cornerManager = new CornerManager();
+        storedFloorCorners = null;
+        updateInstructions();
+
+        Toast.makeText(this,
+                mode == InspectionMode.FLOOR ? "Floor Inspection Mode" :
+                        mode == InspectionMode.WALL ? "Wall Inspection Mode" :
+                                "Virtual Wall Mode - Enter Height",
+                Toast.LENGTH_SHORT).show();
+    }
+    private void onHeightConfirmed() {
+        String heightStr = etRoomHeight.getText().toString().trim();
+        if (heightStr.isEmpty()) {
+            Toast.makeText(this, "Please enter room height", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            userInputRoomHeight = Float.parseFloat(heightStr);
+            if (userInputRoomHeight < 2.0f || userInputRoomHeight > 4.0f) {
+                Toast.makeText(this, "Height must be between 2.0m and 4.0m", Toast.LENGTH_LONG).show();
+                return;
+            }
+            cardHeightInput.setVisibility(View.GONE);
+            tvInstructions.setText(String.format("✓ Height: %.2fm • Now tap FLOOR corner 1 of 4", userInputRoomHeight));
+            Toast.makeText(this, String.format("Height set to %.2fm. Place 4 corners on the FLOOR.", userInputRoomHeight), Toast.LENGTH_LONG).show();
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, "Invalid height value", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void toggleCaptureMode() {
@@ -370,21 +619,48 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         float[] gridNormal = getGridPlaneNormal();
 
-        // Calculate angle from perpendicular (0° = perpendicular, 90° = parallel)
-        float dot = Math.abs(
-                cameraForward[0] * gridNormal[0] +
-                        cameraForward[1] * gridNormal[1] +
-                        cameraForward[2] * gridNormal[2]
-        );
+        // ✅ CRITICAL FIX: Different angle calculation for floors vs walls
+        float angleFromPerpendicular;
+        float displayAngle;
+        float threshold;
 
-        float angleFromPerpendicular = (float) Math.toDegrees(Math.acos(Math.min(1.0f, dot)));
+        if (currentMode == InspectionMode.FLOOR) {
+            // FLOOR: Camera should point DOWN (perpendicular to floor)
+            float dot = Math.abs(
+                    cameraForward[0] * gridNormal[0] +
+                            cameraForward[1] * gridNormal[1] +
+                            cameraForward[2] * gridNormal[2]
+            );
+            angleFromPerpendicular = (float) Math.toDegrees(Math.acos(Math.min(1.0f, dot)));
+            displayAngle = 90f - angleFromPerpendicular; // 90° = perfect for floor
+            threshold = 30f; // ±30° from perpendicular
 
-        // Store angle for UI display (invert so 90° = perfect)
-        outAngle[0] = 90f - angleFromPerpendicular;
-        currentCameraAngle = outAngle[0];
+        } else {
+            // WALL/VIRTUAL_WALL: Camera should point HORIZONTAL (parallel to floor plane)
+            // Calculate angle from horizontal instead of perpendicular
+            float[] upVector = {0f, 1f, 0f}; // World up vector
 
-        // Check alignment (allow ±30° from perpendicular)
-        if (angleFromPerpendicular > CAPTURE_ANGLE_THRESHOLD) {
+            float dotWithUp = Math.abs(
+                    cameraForward[0] * upVector[0] +
+                            cameraForward[1] * upVector[1] +
+                            cameraForward[2] * upVector[2]
+            );
+
+            // Angle from horizontal plane (0° = horizontal, 90° = pointing up/down)
+            float angleFromHorizontal = (float) Math.toDegrees(Math.asin(Math.min(1.0f, dotWithUp)));
+
+            displayAngle = angleFromHorizontal; // 0° = perfect for wall
+            angleFromPerpendicular = angleFromHorizontal; // Use this for threshold check
+            threshold = 30f; // Allow ±30° from horizontal
+        }
+
+        // Store angle for UI display
+        outAngle[0] = displayAngle;
+        currentCameraAngle = displayAngle;
+
+        // Check alignment
+        if (angleFromPerpendicular > threshold) {
+            Log.v(TAG, "Angle check failed: " + angleFromPerpendicular + "° (threshold: " + threshold + "°)");
             return -1;
         }
 
@@ -407,10 +683,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         camToGrid[1] * gridNormal[1] +
                         camToGrid[2] * gridNormal[2];
 
-        // Check height from grid
+        // ✅ Different distance thresholds for floor vs wall
+        float distThreshold = (currentMode == InspectionMode.WALL || currentMode == InspectionMode.VIRTUAL_WALL)
+                ? 2.0f // 2.0 meters for walls (increased from 1.5m)
+                : CAPTURE_DISTANCE_THRESHOLD; // 1.0 meter for floors
+
         float absHeight = Math.abs(distAlongNormal);
-        if (absHeight > CAPTURE_DISTANCE_THRESHOLD) {
-            Log.v(TAG, "Camera too far: " + absHeight + "m");
+        if (absHeight > distThreshold) {
+            Log.v(TAG, "Camera too far: " + absHeight + "m (threshold: " + distThreshold + "m)");
             return -1;
         }
 
@@ -420,9 +700,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 cameraPos[2] - distAlongNormal * gridNormal[2]
         };
 
-        // Find closest cell
+        // Find closest cell with larger tolerance for walls
         int closest = -1;
         float minDist = Float.MAX_VALUE;
+        float cellTolerance = (currentMode == InspectionMode.WALL || currentMode == InspectionMode.VIRTUAL_WALL)
+                ? 0.6f  // 60cm tolerance for walls (increased from 50cm)
+                : 0.35f; // 35cm tolerance for floors
 
         for (int i = 0; i < allCells.size(); i++) {
             GridManager.GridCell cell = allCells.get(i);
@@ -431,18 +714,20 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             float dz = projectedPos[2] - cell.center[2];
             float dist = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-            if (dist < 0.35f && dist < minDist) { // Increased to 35cm tolerance
+            if (dist < cellTolerance && dist < minDist) {
                 minDist = dist;
                 closest = i;
             }
         }
 
         if (closest >= 0) {
-            Log.d(TAG, "Cell " + (closest + 1) + " at " + minDist + "m, angle=" + outAngle[0] + "°");
+            String mode = (currentMode == InspectionMode.FLOOR) ? "FLOOR" : "WALL";
+            Log.d(TAG, mode + " Cell " + (closest + 1) + " at " + minDist + "m, angle=" + outAngle[0] + "°");
         }
 
         return closest;
     }
+
     private void updateAngleIndicator(float angle) {
         if (angleIndicator == null || tvCameraAngle == null) return;
 
@@ -450,116 +735,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             // Update angle text
             tvCameraAngle.setText(String.format("%.1f°", angle));
 
-            // Color code based on angle accuracy
+            // ✅ Different color thresholds for floor vs wall
             int color;
-            if (Math.abs(angle - 90f) < 5f) {
+            float perfectAngle = (currentMode == InspectionMode.FLOOR) ? 90f : 0f;
+            float deviation = Math.abs(angle - perfectAngle);
+
+            if (deviation < 5f) {
                 color = Color.parseColor("#4CAF50"); // Green (excellent)
-            } else if (Math.abs(angle - 90f) < 15f) {
+            } else if (deviation < 15f) {
                 color = Color.parseColor("#FFEB3B"); // Yellow (good)
-            } else if (Math.abs(angle - 90f) < 30f) {
+            } else if (deviation < 30f) {
                 color = Color.parseColor("#FF9800"); // Orange (acceptable)
             } else {
                 color = Color.parseColor("#F44336"); // Red (too steep/shallow)
             }
 
             tvCameraAngle.setTextColor(color);
-
-            // Rotate indicator based on angle
-            angleIndicator.setRotation(angle - 90f);
         });
     }
 
 
 
-  /*  private void captureCellImage(int cellIndex, Frame frame) {
-        if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) {
-            Log.e(TAG, "Invalid cell index: " + cellIndex);
-            return;
-        }
 
-        if (cellImagePaths.containsKey(cellIndex)) {
-            Log.d(TAG, "Cell " + (cellIndex + 1) + " already captured");
-            return;
-        }
 
-        Image image = null;
-
-        try {
-            // Try to acquire camera image with retries
-            int retryCount = 0;
-            while (image == null && retryCount < 3) {
-                try {
-                    image = frame.acquireCameraImage();
-                    break;
-                } catch (NotYetAvailableException e) {
-                    retryCount++;
-                    Log.v(TAG, "Image not available, retry " + retryCount);
-                    try {
-                        Thread.sleep(50); // Wait 50ms before retry
-                    } catch (InterruptedException ie) {
-                        break;
-                    }
-                } catch (DeadlineExceededException e) {
-                    Log.v(TAG, "Deadline exceeded");
-                    return;
-                }
-            }
-
-            if (image == null) {
-                Log.w(TAG, "Failed to acquire image after retries");
-                return;
-            }
-
-            if (image.getFormat() != ImageFormat.YUV_420_888) {
-                Log.e(TAG, "Unexpected format: " + image.getFormat());
-                image.close();
-                return;
-            }
-
-            int width = image.getWidth();
-            int height = image.getHeight();
-            Log.d(TAG, "📸 Acquired image for cell " + (cellIndex + 1) +
-                    ": " + width + "x" + height);
-
-            // Convert YUV to JPEG (MUST happen before closing image)
-            byte[] jpegData = convertYUVtoJPEG(image);
-
-            // CRITICAL: Close image immediately
-            image.close();
-            image = null;
-
-            if (jpegData == null || jpegData.length == 0) {
-                Log.e(TAG, "❌ JPEG conversion failed");
-                return;
-            }
-
-            Log.d(TAG, "✓ Converted: " + (jpegData.length / 1024) + " KB");
-
-            // Save on background thread
-            final byte[] finalData = jpegData;
-            final int finalIndex = cellIndex;
-
-            captureExecutor.execute(() -> saveCellImage(finalIndex, finalData));
-
-        } catch (Exception e) {
-            Log.e(TAG, "❌ Capture exception for cell " + (cellIndex + 1), e);
-            runOnUiThread(() ->
-                    Toast.makeText(this, "Capture failed - retry positioning",
-                            Toast.LENGTH_SHORT).show()
-            );
-        } finally {
-            if (image != null) {
-                try {
-                    image.close();
-                    Log.d(TAG, "Image closed in finally");
-                } catch (Exception e) {
-                    Log.e(TAG, "Error closing image", e);
-                }
-            }
-        }
-    }
-*/
-  private long lastCaptureTime = 0;
+//  private long lastCaptureTime = 0;
 
 
 
@@ -571,274 +770,296 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // Single-threaded executor to save images one by one
     //private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
 
+
+
     private void captureCellImage(int cellIndex, Frame frame) {
-        if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) {
-            Log.e(TAG, "Invalid cell index: " + cellIndex);
-            return;
-        }
-
-        if (cellImagePaths.containsKey(cellIndex)) {
-            Log.d(TAG, "Cell " + (cellIndex + 1) + " already captured");
-            return;
-        }
-
-        // ✅ Rate limit: minimum 1 second between captures
-        long now = System.currentTimeMillis();
-        if (now - lastCaptureTime < 1000) {
-            Log.w(TAG, "Capture too fast, wait 1 second");
-            runOnUiThread(() -> Toast.makeText(this, "Wait 1 second between captures", Toast.LENGTH_SHORT).show());
-            return;
-        }
-        lastCaptureTime = now;
-
-        Image image = null;
-
         try {
-            // Try to acquire camera image
-            try {
-                image = frame.acquireCameraImage();
-            } catch (NotYetAvailableException e) {
-                Log.w(TAG, "Camera image not ready - try again");
-                runOnUiThread(() -> Toast.makeText(this, "Camera busy - try again", Toast.LENGTH_SHORT).show());
+            if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) {
+                Log.e("capture1", "Invalid cell index: " + cellIndex);
                 return;
             }
 
-            if (image == null) {
-                Log.w(TAG, "Failed to acquire image");
+            if (cellImagePaths.containsKey(cellIndex)) {
+                Log.d("capture2", "Cell already captured");
                 return;
             }
 
-            if (image.getFormat() != ImageFormat.YUV_420_888) {
-                Log.e(TAG, "Unexpected format: " + image.getFormat());
-                image.close();
-                return;
-            }
-
-            int width = image.getWidth();
-            int height = image.getHeight();
-            Log.d(TAG, "📸 Captured cell " + (cellIndex + 1) + ": " + width + "x" + height);
-
-            // Convert to JPEG immediately
-            byte[] jpegData = convertYUVtoJPEG(image);
-
-            // Close image ASAP to free memory
-            image.close();
-            image = null;
-
-            if (jpegData == null || jpegData.length == 0) {
-                Log.e(TAG, "JPEG conversion failed");
-                return;
-            }
-
-            Log.d(TAG, "✓ Converted: " + (jpegData.length / 1024) + " KB");
-
-            // Save in background thread
-            final int finalIndex = cellIndex;
-            final byte[] finalData = jpegData;
-            captureExecutor.execute(() -> {
-                saveCellImage(finalIndex, finalData);
-
-                // Force garbage collection after save
-                System.gc();
-                System.runFinalization();
-
-                Log.d(TAG, "Memory cleanup done for cell " + (finalIndex + 1));
-            });
-
-        } catch (Exception e) {
-            Log.e(TAG, "Capture exception for cell " + (cellIndex + 1), e);
-            runOnUiThread(() -> Toast.makeText(this, "Capture failed - retry", Toast.LENGTH_SHORT).show());
-        } finally {
-            // Always close image in case of exception
-            if (image != null) {
-                try {
-                    image.close();
-                } catch (Exception e) {
-                    Log.e(TAG, "Error closing image in finally", e);
-                }
-            }
-        }
-    }
-
-    private String saveJPEGToFile(byte[] data, String fileName) throws IOException {
-        File dir = new File(getFilesDir(), "grid_cells");
-        if (!dir.exists()) dir.mkdirs();
-        File file = new File(dir, fileName);
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(data);
-        }
-        return file.getAbsolutePath();
-    }
-
-
-
-
-    private byte[] convertYUVtoJPEG(Image image) {
-        ByteArrayOutputStream outputStream = null;
-        byte[] nv21 = null;
-        byte[] uBytes = null;
-        byte[] vBytes = null;
-
-        try {
-            Image.Plane[] planes = image.getPlanes();
-            if (planes == null || planes.length < 3) {
-                Log.e(TAG, "Invalid planes");
-                return null;
-            }
-
-            ByteBuffer yBuffer = planes[0].getBuffer();
-            ByteBuffer uBuffer = planes[1].getBuffer();
-            ByteBuffer vBuffer = planes[2].getBuffer();
-
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
-
-            // Allocate buffers
-            nv21 = new byte[ySize + uSize + vSize];
-            uBytes = new byte[uSize];
-            vBytes = new byte[vSize];
-
-            // Copy Y plane
-            yBuffer.get(nv21, 0, ySize);
-
-            // Get U and V planes
-            uBuffer.get(uBytes);
-            vBuffer.get(vBytes);
-
-            // Interleave V and U into NV21 format
-            int uvIndex = ySize;
-            for (int i = 0; i < Math.min(uSize, vSize); i++) {
-                nv21[uvIndex++] = vBytes[i];
-                nv21[uvIndex++] = uBytes[i];
-            }
-
-            // Clear temporary buffers immediately
-            uBytes = null;
-            vBytes = null;
-
-            // Compress to JPEG with reduced quality
-            YuvImage yuvImage = new YuvImage(
-                    nv21,
-                    ImageFormat.NV21,
-                    image.getWidth(),
-                    image.getHeight(),
-                    null
-            );
-
-            outputStream = new ByteArrayOutputStream(image.getWidth() * image.getHeight() / 4);
-            boolean success = yuvImage.compressToJpeg(
-                    new Rect(0, 0, image.getWidth(), image.getHeight()),
-                    50, // Lower quality = smaller file = less memory
-                    outputStream
-            );
-
-            if (!success) {
-                Log.e(TAG, "JPEG compression failed");
-                return null;
-            }
-
-            byte[] result = outputStream.toByteArray();
-
-            // Clear NV21 buffer
-            nv21 = null;
-
-            return result;
-
-        } catch (OutOfMemoryError e) {
-            Log.e(TAG, "OUT OF MEMORY during conversion", e);
-            System.gc();
-            return null;
-        } catch (Exception e) {
-            Log.e(TAG, "YUV conversion error", e);
-            return null;
-        } finally {
-            // Cleanup
-            nv21 = null;
-            uBytes = null;
-            vBytes = null;
-
-            if (outputStream != null) {
-                try {
-                    outputStream.close();
-                } catch (Exception ignored) {}
-            }
-
-            // Force garbage collection
-            System.gc();
-        }
-    }
-
-
-
-
-
-    private void saveCellImage(int cellIndex, byte[] jpegData) {
-        try {
-            File imgDir = new File(getExternalFilesDir(null), "cell_images");
-            if (!imgDir.exists()) {
-                imgDir.mkdirs();
-            }
-
-            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-                    .format(new Date());
-            String filename = String.format("cell_%03d_%s.jpg", cellIndex + 1, timestamp);
-            File imageFile = new File(imgDir, filename);
-
-            // ✅ Write with buffering
-            try (FileOutputStream fos = new FileOutputStream(imageFile);
-                 BufferedOutputStream bos = new BufferedOutputStream(fos, 8192)) {
-                bos.write(jpegData);
-                bos.flush();
-            }
-
-            // ✅ Verify file
-            if (!imageFile.exists() || imageFile.length() == 0) {
-                Log.e(TAG, "File verification failed");
+            // ✅ Memory check
+            if (!isMemorySafe()) {
                 runOnUiThread(() ->
-                        Toast.makeText(HelloArActivity.this,
-                                "❌ Save failed for cell " + (cellIndex + 1),
-                                Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "❌ LOW MEMORY - Restart app", Toast.LENGTH_SHORT).show()
                 );
                 return;
             }
 
-            Log.d(TAG, "✓ SAVED: " + filename + " (" + (imageFile.length() / 1024) + " KB)");
+            // ✅ Rate limit
+            long now = System.currentTimeMillis();
+            if (now - lastCaptureTime < 3000) {
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Wait 3 seconds", Toast.LENGTH_SHORT).show()
+                );
+                return;
+            }
+            lastCaptureTime = now;
 
-            // ✅ Update UI on main thread
-            runOnUiThread(() -> {
-                cellImagePaths.put(cellIndex, imageFile.getAbsolutePath());
+            Image image = null;
+            try {
+                image = frame.acquireCameraImage();
 
-                // ✅ Vibrate feedback
-                try {
-                    Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                    if (vib != null && vib.hasVibrator()) {
-                        vib.vibrate(150);
-                    }
-                } catch (Exception ignored) {}
-
-                int total = cellImagePaths.size();
-                Toast.makeText(HelloArActivity.this,
-                        String.format("✓ Cell %d saved (%d/%d)",
-                                cellIndex + 1, total, GRID_ROWS * GRID_COLS),
-                        Toast.LENGTH_SHORT).show();
-
-                updateVisitedCountDisplay();
-
-                // ✅ Update 2D view if visible
-                if (gridViewVisible && gridView2D != null) {
-                    gridView2D.invalidate();
+                if (image.getFormat() != ImageFormat.YUV_420_888) {
+                    Log.e("capture3", "Wrong format: " + image.getFormat());
+                    if (image != null) image.close(); // FIX: Close on error
+                    return;
                 }
-            });
 
-        } catch (Exception e) {
-            Log.e(TAG, "Save failed", e);
-            runOnUiThread(() ->
-                    Toast.makeText(HelloArActivity.this,
-                            "❌ Save error: " + e.getMessage(),
-                            Toast.LENGTH_SHORT).show()
-            );
+                Log.d("capture4", "📸 Capturing cell " + (cellIndex + 1));
+
+                // ✅ Create output file
+                // File imgDir = new File(getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+                File imgDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "AR_Floor_Inspection");
+
+                if (!imgDir.exists()) {
+                    imgDir.mkdirs();
+                }
+
+                SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+                String timestamp = dateFormat.format(new Date());
+                String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
+                        cellIndex + 1, timestamp);
+                File outputFile = new File(imgDir, filename);
+
+                // ✅ CRITICAL: Direct conversion (NO intermediate buffers!)
+                final Image finalImage = image;
+                final int finalIndex = cellIndex;
+                final File finalFile = outputFile;
+
+                captureExecutor.execute(() -> {
+                    boolean success = false;
+                    try {
+                        // ✅ Use 25% quality (was 40%)
+                        success = YuvConverter.saveImageDirectly(finalImage, finalFile, 25);
+                    } catch (Exception e) {
+                        Log.e("capture5", "Save failed", e);
+                    } finally {
+                        // ✅ CRITICAL: Close in finally block
+                        try {
+                            finalImage.close();
+                            Log.d("capture6", "Image closed");
+                        } catch (Exception e) {
+                            Log.e("capture7", "Failed to close image", e);
+                        }
+                    }
+
+                    if (success && finalFile.exists()) {
+                        Log.d("capture8", "✓ SAVED: " + finalFile.getName() +
+                                " (" + (finalFile.length() / 1024) + " KB)");
+
+                        // Add to gallery
+                        MediaScannerConnection.scanFile(
+                                HelloArActivity.this,
+                                new String[]{finalFile.getAbsolutePath()},
+                                new String[]{"image/jpeg"},
+                                null
+                        );
+// ✅ ADD THIS LINE HERE - Auto-upload after save
+                        uploadImageToServer(finalFile);
+                        // Update UI
+                        runOnUiThread(() -> {
+                            cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
+
+                            // Vibrate
+                            try {
+                                Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                                if (vib != null) vib.vibrate(150);
+                            } catch (Exception ignored) {
+                            }
+
+                            int total = cellImagePaths.size();
+                            int remaining = (GRID_ROWS * GRID_COLS) - total;
+                            Toast.makeText(HelloArActivity.this,
+                                    String.format("✓ Cell %d saved • %d more to go",
+                                            finalIndex + 1, remaining),
+                                    Toast.LENGTH_SHORT).show();
+
+                            updateVisitedCountDisplay();
+                            updateViewButtonVisibility();
+
+                            if (gridViewVisible && gridView2D != null) {
+                                gridView2D.invalidate();
+                            }
+                        });
+                    } else {
+                        Log.e(TAG, "❌ Save failed");
+                        runOnUiThread(() ->
+                                Toast.makeText(HelloArActivity.this,
+                                        "❌ Failed to save cell " + (finalIndex + 1),
+                                        Toast.LENGTH_SHORT).show()
+                        );
+                    }
+
+                    // ✅ Explicit cleanup
+                    System.gc();
+                });
+
+                // Don't close image here - executor will do it in finally block
+                image = null;
+
+            } catch (NotYetAvailableException e) {
+                if (image != null) {
+                    try {
+                        image.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Camera busy", Toast.LENGTH_SHORT).show()
+                );
+            } catch (OutOfMemoryError e) {
+                Log.e(TAG, "❌ OUT OF MEMORY!", e);
+                if (image != null) {
+                    try {
+                        image.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                runOnUiThread(() ->
+                        new AlertDialog.Builder(this)
+                                .setTitle("Memory Full")
+                                .setMessage("Cannot capture. Restart app.")
+                                .setPositiveButton("OK", null)
+                                .show()
+                );
+            } catch (Exception e) {
+                Log.e(TAG, "Capture failed", e);
+                if (image != null) {
+                    try {
+                        image.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
         }
+        catch (Exception e) {
+            Log.e("capture9", "Capture failed", e);}
+    }
+    // Add this method anywhere in HelloArActivity (e.g., after captureCellImage)
+    private void uploadImageToServer(File imageFile) {
+        new Thread(() -> {
+            try {
+                String serverUrl = SERVER_URL + "/upload";
+
+                RequestBody requestBody = new MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("file", imageFile.getName(),
+                                RequestBody.create(imageFile, MediaType.get("image/jpeg")))
+                        .build();
+
+                Request request = new Request.Builder()
+                        .url(serverUrl)
+                        .post(requestBody)
+                        .build();
+
+                Response response = httpClient.newCall(request).execute();
+
+                if (response.isSuccessful()) {
+                    Log.d(TAG, "✅ Upload success: " + imageFile.getName());
+                    runOnUiThread(() ->
+                            Toast.makeText(this, "✅ Uploaded: " + imageFile.getName(),
+                                    Toast.LENGTH_SHORT).show()
+                    );
+                } else {
+                    Log.e(TAG, "❌ Upload failed: " + response.code());
+                }
+                response.close();
+            } catch (Exception e) {
+                Log.e(TAG, "Upload error", e);
+            }
+        }).start();
+    }
+    // Add this helper method
+    private void updateViewButtonVisibility() {
+        runOnUiThread(() -> {
+            Button btnViewCaptured = findViewById(R.id.btnViewCaptured);
+            if (btnViewCaptured != null) {
+                if (cellImagePaths.isEmpty()) {
+                    btnViewCaptured.setVisibility(View.GONE);
+                } else {
+                    btnViewCaptured.setVisibility(View.VISIBLE);
+                    // Update button text with count
+                    int count = cellImagePaths.size();
+                    btnViewCaptured.setText("VIEW (" + count + ")");
+                }
+            }
+        });
+    }
+
+
+
+    private boolean isMemorySafe() {
+        Runtime runtime = Runtime.getRuntime();
+        long usedMemory = runtime.totalMemory() - runtime.freeMemory();
+        long maxMemory = runtime.maxMemory();
+        long availableMemory = maxMemory - usedMemory;
+
+        float percentUsed = (float) usedMemory / maxMemory * 100;
+
+        Log.d(TAG, String.format("Memory: %.1f%% used (%.1f MB / %.1f MB free)",
+                percentUsed,
+                usedMemory / 1024f / 1024f,
+                availableMemory / 1024f / 1024f));
+
+        // If using more than 75%, refuse to capture
+        if (percentUsed > 75) {
+            Log.e(TAG, "❌ MEMORY CRITICAL - cannot capture");
+            return false;
+        }
+
+        return true;
+    }
+
+
+
+
+
+
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+
+        // ✅ Android is telling us memory is low
+        if (level >= TRIM_MEMORY_MODERATE) {
+            Log.w(TAG, "Memory pressure detected - forcing cleanup");
+
+            // Stop capture mode
+            if (captureMode) {
+                runOnUiThread(() -> toggleCaptureMode());
+            }
+
+            // Aggressive GC
+            System.gc();
+            System.runFinalization();
+            System.gc();
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        Log.e(TAG, "CRITICAL: Low memory warning! Forcing cleanup.");
+        // DO NOT call finish() — just warn and clean up
+        runOnUiThread(() -> {
+            Toast.makeText(this, "MemoryWarning: Freeing resources...", Toast.LENGTH_LONG).show();
+            // Optional: disable capture to prevent further memory pressure
+            if (captureMode) {
+                toggleCaptureMode(); // turns off capture mode
+            }
+        });
+
+        // Aggressively release memory
+        System.gc();
+        System.runFinalization();
+        System.gc();
     }
 
 
@@ -858,23 +1079,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
     }
 
-    public void exportCapturedImagesInfo() {
-        if (cellImagePaths.isEmpty()) {
-            Toast.makeText(this, "No images captured yet", Toast.LENGTH_SHORT).show();
-            return;
-        }
 
-        StringBuilder info = new StringBuilder("Captured Images:\n\n");
-        for (Map.Entry<Integer, String> entry : cellImagePaths.entrySet()) {
-            info.append(String.format("Cell %03d: %s\n",
-                    entry.getKey() + 1, entry.getValue()));
-        }
-
-        Log.d(TAG, info.toString());
-        Toast.makeText(this,
-                "Exported " + cellImagePaths.size() + " cell images",
-                Toast.LENGTH_LONG).show();
-    }
     private void createFloorOverlay() {
         if (!cornerManager.hasAllCorners()) return;
 
@@ -958,30 +1163,42 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return normal;
     }
     // â­ NEW: Update the updateInstructions() method:
+
     private void updateInstructions() {
         runOnUiThread(() -> {
             int cornerCount = cornerManager.getCornerCount();
-
-            // Update corner indicators
             for (int i = 0; i < cornerIndicators.length; i++) {
-                if (i < cornerCount) {
-                    cornerIndicators[i].setBackgroundResource(R.drawable.corner_indicator);
-                } else {
-                    cornerIndicators[i].setBackgroundResource(R.drawable.corner_indicator_empty);
-                }
+                cornerIndicators[i].setBackgroundResource(
+                        i < cornerCount ? R.drawable.corner_indicator : R.drawable.corner_indicator_empty
+                );
             }
 
+            String surfaceType = currentMode == InspectionMode.FLOOR ? "floor" :
+                    currentMode == InspectionMode.WALL ? "wall" :
+                            "floor (for virtual wall)";
+
             if (cornerCount < 4) {
-                tvInstructions.setText("Tap to place corner anchor " + (cornerCount + 1) + " of 4");
-                btnDone.setEnabled(false);
-                btnDone.setAlpha(0.5f);
+                if (currentMode == InspectionMode.VIRTUAL_WALL && cardHeightInput.getVisibility() == View.VISIBLE) {
+                    tvInstructions.setText("📐 Enter room height below, then tap Confirm");
+                    btnDone.setEnabled(false);
+                    btnDone.setAlpha(0.5f);
+                } else {
+                    tvInstructions.setText(String.format("Tap to place %s corner %d of 4", surfaceType, cornerCount + 1));
+                    btnDone.setEnabled(false);
+                    btnDone.setAlpha(0.5f);
+                }
                 cornerHintsContainer.setVisibility(View.VISIBLE);
             } else {
-                tvInstructions.setText("All 4 corners placed. Press 'Done' to create grid.");
+                if (currentMode == InspectionMode.VIRTUAL_WALL) {
+                    tvInstructions.setText("All 4 floor corners placed. Press 'Done' to create virtual walls.");
+                } else {
+                    tvInstructions.setText(String.format("All 4 %s corners placed. Press 'Done' to create grid.", surfaceType));
+                }
                 btnDone.setEnabled(true);
                 btnDone.setAlpha(1.0f);
                 cornerHintsContainer.setVisibility(View.GONE);
             }
+
             tvDistance.setVisibility(View.GONE);
             cardDistance.setVisibility(View.GONE);
         });
@@ -989,71 +1206,59 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // â­ UPDATE: Enhanced onDoneClicked() with professional UI updates:
     private void onDoneClicked() {
-        // Check if grid is already created
+        // Toggle 2D view if grid already exists
         if (gridManager != null && gridManager.hasAllCorners()) {
-            // Grid exists - toggle 2D view
             toggle2DGridView();
             return;
         }
 
-        // First time - create grid
+        // Handle Virtual Wall mode
+        if (currentMode == InspectionMode.VIRTUAL_WALL) {
+            if (cardHeightInput.getVisibility() == View.VISIBLE) {
+                Toast.makeText(this, "Please confirm room height first", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (!cornerManager.hasAllCorners()) {
+                Toast.makeText(this, "Place all 4 floor corners first", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            createVirtualWallAnchors();
+            return;
+        }
+
+        // Original FLOOR/WALL logic
         if (!cornerManager.hasAllCorners()) {
-            Log.w(TAG, "Cannot proceed: only " + cornerManager.getCornerCount() + " corners placed");
-            Toast.makeText(this, "Please place exactly 4 corners before pressing Done.",
-                    Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Please place exactly 4 corners before pressing Done.", Toast.LENGTH_LONG).show();
             return;
         }
-
-        Log.d(TAG, "onDoneClicked: Starting grid visualization...");
-
         float[] orderedCoordinates = cornerManager.getOrderedCorners();
-
         if (orderedCoordinates == null || orderedCoordinates.length != 12) {
-            Log.e(TAG, "Error: orderedCoordinates is null or wrong length");
-            Toast.makeText(this, "Error in corner ordering. Try placing corners again.",
-                    Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Error in corner ordering. Try placing corners again.", Toast.LENGTH_LONG).show();
             return;
         }
-
-        // Store coordinates for later use
         final float[] finalCoordinates = orderedCoordinates.clone();
-
-        // Initialize and create grid visualization
         surfaceView.queueEvent(() -> {
             try {
-                // Initialize grid using configured values
                 gridManager.setGridSize(GRID_ROWS, GRID_COLS);
                 gridManager.setGapSize(GRID_GAP_SIZE);
                 gridManager.initialize(finalCoordinates);
                 gridManager.createMeshes(render);
-
-                Log.d(TAG, "Grid visualization created: " +
-                        GRID_ROWS + "x" + GRID_COLS + " cells with " +
-                        GRID_GAP_SIZE + "m gap");
-
                 runOnUiThread(() -> {
-                    // Update UI for professional look
                     Toast.makeText(this, "Grid visualization created!", Toast.LENGTH_SHORT).show();
                     tvInstructions.setText("Grid overlay active - Tap '2D View' to edit");
-
-                    // Show grid info card
-                    cardGridInfo.setVisibility(View.VISIBLE);
-                    tvGridSize.setText(GRID_ROWS + "Ã—" + GRID_COLS + " Grid Active");
+                    tvGridSize.setText(GRID_ROWS + "×" + GRID_COLS + " Grid Active");
                     updateVisitedCountDisplay();
 
-                    // Update button
+                    // ✅ FIX: Change button text to "2D VIEW"
                     btnDone.setText("2D VIEW");
-                    btnCapture.setVisibility(View.VISIBLE);
-                    btnCapture.setBackgroundColor(Color.parseColor("#4CAF50")); // Green
 
-                    // Initialize 2D grid view
+                    btnCapture.setVisibility(View.VISIBLE);
+                    btnCapture.setBackgroundColor(Color.parseColor("#2196F3")); // Blue for "START"
                     initialize2DGridView(finalCoordinates);
                 });
             } catch (Exception e) {
-                Log.e(TAG, "Failed to create grid: " + e.getMessage(), e);
-                runOnUiThread(() ->
-                        Toast.makeText(this, "Error creating grid", Toast.LENGTH_SHORT).show()
-                );
+                Log.e(TAG, "Failed to create grid", e);
+                runOnUiThread(() -> Toast.makeText(this, "Error creating grid", Toast.LENGTH_SHORT).show());
             }
         });
     }
@@ -1106,7 +1311,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             surfaceView.setVisibility(View.VISIBLE);
             btnDone.setVisibility(View.VISIBLE);
             tvInstructions.setVisibility(View.VISIBLE);
-            cardGridInfo.setVisibility(View.VISIBLE);
+            //cardGridInfo.setVisibility(View.VISIBLE);
+            cardGridInfo.setVisibility(View.GONE);
 
             // Get updated visited cells from 2D view
             if (gridView2D != null) {
@@ -1357,6 +1563,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         if (tap == null || camera.getTrackingState() != TrackingState.TRACKING) {
             return;
         }
+        if (currentMode == InspectionMode.VIRTUAL_WALL && cardHeightInput.getVisibility() == View.VISIBLE) {
+            showToastOnUiThread("Please confirm room height first");
+            return;
+        }
+        // Require mode selection
+        if (currentMode == InspectionMode.NONE) {
+            showToastOnUiThread("Select Floor or Wall mode first");
+            return;
+        }
 
         if (cornerManager.hasAllCorners()) {
             return;
@@ -1367,15 +1582,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         for (HitResult hit : frame.hitTest(x, y)) {
             Trackable trackable = hit.getTrackable();
-            if ((trackable instanceof Plane &&
-                    ((Plane) trackable).isPoseInPolygon(hit.getHitPose())) ||
-                    (trackable instanceof PointCloud)) {
+
+            if (trackable instanceof Plane) {
+                Plane plane = (Plane) trackable;
+
+                // Filter by mode
+                boolean isValidPlane = false;
+                if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
+                    isValidPlane = (plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING);
+                } else if (currentMode == InspectionMode.WALL) {
+                    isValidPlane = (plane.getType() == Plane.Type.VERTICAL);
+                }
+
+                if (!isValidPlane || !plane.isPoseInPolygon(hit.getHitPose())) {
+                    continue;
+                }
 
                 Anchor anchor = hit.createAnchor();
                 boolean added = cornerManager.addCorner(anchor, trackable);
-
                 if (added) {
-                    showToastOnUiThread("Corner " + cornerManager.getCornerCount() + " placed");
+                    String modeText = currentMode == InspectionMode.FLOOR ? "Floor" : "Wall";
+                    showToastOnUiThread(modeText + " Corner " + cornerManager.getCornerCount() + " placed");
                     updateInstructions();
                     surfaceView.queueEvent(() -> {
                         createCornerConnectionLines();
@@ -1386,6 +1613,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
                 break;
             }
+            // ⚠️ Skip PointCloud hits — only use Plane hits
         }
     }
 
@@ -1481,7 +1709,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     // UPDATE onDestroy() to cleanup grid manager
-    @Override
+  /*  @Override
     protected void onDestroy() {
         if (captureExecutor != null) {
             captureExecutor.shutdown();
@@ -1517,7 +1745,35 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         super.onDestroy();
+    }*/
+    @Override
+    protected void onDestroy() {
+        if (captureExecutor != null) {
+            captureExecutor.shutdownNow(); // Force shutdown
+        }
+        if (session != null) {
+            session.close();
+            session = null;
+        }
+        // Clean up ALL GPU resources on GL thread
+        if (surfaceView != null) {
+            surfaceView.queueEvent(() -> {
+                // Close all meshes, textures, framebuffers
+                if (pointCloudMesh != null) pointCloudMesh.close();
+                if (virtualObjectMesh != null) virtualObjectMesh.close();
+                if (virtualSceneFramebuffer != null) virtualSceneFramebuffer.close();
+                if (cubemapFilter != null) cubemapFilter.close();
+                if (dfgTexture != null) dfgTexture.close();
+                // ... and your custom managers
+                cornerLineMeshManager.cleanup();
+                visitedCellMeshManager.cleanup();
+                floorOverlayMeshManager.cleanup();
+                gridManager.cleanup();
+            });
+        }
+        super.onDestroy();
     }
+
 
     @Override
     protected void onResume() {
@@ -1587,6 +1843,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     @Override
     public void onPause() {
         super.onPause();
+
+        // ✅ Clear capture mode
         if (captureMode) {
             captureMode = false;
             if (angleIndicator != null) {
@@ -1594,7 +1852,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }
 
+        // ✅ Force memory cleanup
         System.gc();
+
         if (session != null) {
             displayRotationHelper.onPause();
             surfaceView.onPause();
@@ -1782,7 +2042,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
             // ✅ Show which cell user is targeting
             if (cellBelow >= 0) {
-                // ✅ Check if this cell is marked as visited in 2D view
                 boolean shouldCapture = visitedCells[cellBelow];
                 boolean alreadyCaptured = cellImagePaths.containsKey(cellBelow);
 
@@ -1791,24 +2050,29 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 runOnUiThread(() -> {
                     int captured = cellImagePaths.size();
 
+                    // ✅ Different angle guidance for floor vs wall
+                    String angleGuidance;
+                    if (currentMode == InspectionMode.FLOOR) {
+                        angleGuidance = String.format("%.1f° (90° = Perfect)", angleOut[0]);
+                    } else {
+                        angleGuidance = String.format("%.1f° (0° = Perfect)", angleOut[0]);
+                    }
+
                     if (alreadyCaptured) {
-                        // Already captured
                         tvInstructions.setText(
-                                String.format("✓ Cell %d captured • %.1f° (%d/%d)",
-                                        cellBelow + 1, angleOut[0], captured, GRID_ROWS * GRID_COLS)
+                                String.format("✓ Cell %d captured • %s (%d/%d)",
+                                        cellBelow + 1, angleGuidance, captured, GRID_ROWS * GRID_COLS)
                         );
                         btnCapture.setEnabled(false);
                         btnCapture.setAlpha(0.5f);
                     } else if (shouldCapture) {
-                        // Marked as visited, ready to capture
                         tvInstructions.setText(
-                                String.format("📸 Cell %d ready • %.1f° • PRESS CAPTURE (%d/%d)",
-                                        cellBelow + 1, angleOut[0], captured, GRID_ROWS * GRID_COLS)
+                                String.format("📸 Cell %d ready • %s • PRESS CAPTURE (%d/%d)",
+                                        cellBelow + 1, angleGuidance, captured, GRID_ROWS * GRID_COLS)
                         );
                         btnCapture.setEnabled(true);
                         btnCapture.setAlpha(1.0f);
                     } else {
-                        // Not marked as visited
                         tvInstructions.setText(
                                 String.format("⚠️ Cell %d not marked • Mark in 2D view first",
                                         cellBelow + 1)
@@ -1818,17 +2082,22 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     }
                 });
 
-                // ✅ Highlight target cell
                 highlightTargetCell(cellBelow);
 
             } else {
-                // Not over any cell
                 currentStableCell = -1;
                 runOnUiThread(() -> {
                     int captured = cellImagePaths.size();
+                    String angleGuidance;
+                    if (currentMode == InspectionMode.FLOOR) {
+                        angleGuidance = String.format("%.1f° (need 60-90°)", angleOut[0]);
+                    } else {
+                        angleGuidance = String.format("%.1f° (need 0-30°)", angleOut[0]);
+                    }
+
                     tvInstructions.setText(
-                            String.format("📐 Position over cell • %.1f° (%d/%d)",
-                                    angleOut[0], captured, GRID_ROWS * GRID_COLS)
+                            String.format("📐 Position over cell • %s (%d/%d)",
+                                    angleGuidance, captured, GRID_ROWS * GRID_COLS)
                     );
                     btnCapture.setEnabled(false);
                     btnCapture.setAlpha(0.5f);
@@ -1950,74 +2219,63 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // === NEW: Manual capture method triggered by button ===
     private void captureCurrentCell() {
+        // ✅ Check if already capturing
+        if (isCaptureInProgress) {
+            Toast.makeText(this, "Capture in progress...", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // ✅ Check memory first
+        if (!isMemorySafe()) {
+            Toast.makeText(this, "❌ Memory too low - restart app", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (!captureMode || !gridManager.hasAllCorners()) {
             Toast.makeText(this, "Enable capture mode first", Toast.LENGTH_SHORT).show();
             return;
         }
-
         if (currentStableCell < 0) {
-            Toast.makeText(this, "Position camera above a cell first", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Position above a cell first", Toast.LENGTH_SHORT).show();
             return;
         }
-
-        // ✅ FIX: Check if cell is marked as visited
         if (!visitedCells[currentStableCell]) {
-            Toast.makeText(this,
-                    String.format("Cell %d not marked as visited. Mark it in 2D view first!",
-                            currentStableCell + 1),
-                    Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Mark cell in 2D view first!", Toast.LENGTH_LONG).show();
             return;
         }
-
-        // ✅ Check if already captured
         if (cellImagePaths.containsKey(currentStableCell)) {
-            Toast.makeText(this,
-                    String.format("Cell %d already captured", currentStableCell + 1),
-                    Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Already captured", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // ✅ Check angle
-        if (Math.abs(currentCameraAngle - 90f) > CAPTURE_ANGLE_THRESHOLD) {
-            Toast.makeText(this,
-                    String.format("⚠️ Adjust angle (%.1f°, need ~90°)", currentCameraAngle),
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
+        // ✅ Mark as in progress
+        isCaptureInProgress = true;
 
-        // ✅ Disable button during capture
+        // ✅ Disable button
         runOnUiThread(() -> {
             btnCapture.setEnabled(false);
-            btnCapture.setAlpha(0.5f);
             btnCapture.setText("CAPTURING...");
         });
 
-        // ✅ Capture on GL thread
         final int cellToCapture = currentStableCell;
         surfaceView.queueEvent(() -> {
             try {
                 Frame frame = session.update();
-                Log.d(TAG, "📸 Manual capture for cell " + (cellToCapture + 1));
-
                 captureCellImage(cellToCapture, frame);
-
-                // ✅ Re-enable button after delay
+                // ✅ 3 second cooldown
                 surfaceView.postDelayed(() -> {
                     runOnUiThread(() -> {
                         btnCapture.setEnabled(true);
-                        btnCapture.setAlpha(1.0f);
                         btnCapture.setText("CAPTURE");
+                        // ✅ Clear flag after delay
+                        isCaptureInProgress = false;
                     });
-                }, 1500); // 1.5 second cooldown
-
+                }, 3000);
             } catch (Exception e) {
-                Log.e(TAG, "Manual capture failed", e);
+                Log.e(TAG, "Capture failed", e);
                 runOnUiThread(() -> {
-                    Toast.makeText(HelloArActivity.this,
-                            "❌ Capture failed - retry", Toast.LENGTH_SHORT).show();
                     btnCapture.setEnabled(true);
-                    btnCapture.setAlpha(1.0f);
                     btnCapture.setText("CAPTURE");
+                    isCaptureInProgress = false; // ✅ Always clear flag on error
                 });
             }
         });
@@ -2025,36 +2283,66 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private boolean hasTrackingPlane() {
         for (Plane plane : session.getAllTrackables(Plane.class)) {
-            if (plane.getTrackingState() == TrackingState.TRACKING
-                    && plane.isPoseInPolygon(plane.getCenterPose())) {
-                return true;
+            if (plane.getTrackingState() != TrackingState.TRACKING) {
+                continue;
+            }
+            if (!plane.isPoseInPolygon(plane.getCenterPose())) {
+                continue;
+            }
+
+            // ✅ NEW: Only count planes that match selected mode
+            if (currentMode == InspectionMode.FLOOR) {
+                if (plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING ||
+                        plane.getType() == Plane.Type.HORIZONTAL_DOWNWARD_FACING) {
+                    return true;
+                }
+            } else if (currentMode == InspectionMode.WALL) {
+                if (plane.getType() == Plane.Type.VERTICAL) {
+                    return true;
+                }
             }
         }
         return false;
     }
-    public void viewCapturedImages() {
-        if (cellImagePaths.isEmpty()) {
-            Toast.makeText(this, "No images captured yet", Toast.LENGTH_SHORT).show();
-            return;
+    private void resetForNewMode() {
+        // Clear existing corners
+        cornerManager = new CornerManager();
+
+        // Clear grid
+        if (gridManager != null) {
+            gridManager.cleanup();
+            gridManager = new GridManager();
         }
 
-        StringBuilder info = new StringBuilder("Captured Images:\n\n");
-        for (Map.Entry<Integer, String> entry : cellImagePaths.entrySet()) {
-            File f = new File(entry.getValue());
-            info.append(String.format("Cell %03d: %s (%.1f KB)\n",
-                    entry.getKey() + 1,
-                    f.getName(),
-                    f.length() / 1024.0));
-        }
+        // Reset visited cells
+        visitedCells = new boolean[GRID_ROWS * GRID_COLS];
+        cellImagePaths.clear();
 
-        Log.d(TAG, info.toString());
+        // Reset UI
+        updateInstructions();
+        btnCapture.setVisibility(View.GONE);
+        cardGridInfo.setVisibility(View.GONE);
 
-        new AlertDialog.Builder(this)
-                .setTitle("Captured Images (" + cellImagePaths.size() + ")")
-                .setMessage(info.toString())
-                .setPositiveButton("OK", null)
+        Toast.makeText(this, "Mode changed. Place new corners.", Toast.LENGTH_LONG).show();
+    }
+
+    private void showModeSelectionDialog() {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Change Inspection Mode")
+                .setMessage("Current mode: " + currentMode)
+                .setPositiveButton("Floor", (dialog, which) -> {
+                    selectInspectionMode(InspectionMode.FLOOR);
+                    resetForNewMode();
+                })
+                .setNegativeButton("Wall", (dialog, which) -> {
+                    selectInspectionMode(InspectionMode.WALL);
+                    resetForNewMode();
+                })
+                .setNeutralButton("Cancel", null)
                 .show();
     }
+
+
     private void showToastOnUiThread(String message) {
         runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show());
     }
@@ -2119,17 +2407,155 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void configureSession() {
         Config config = session.getConfig();
         config.setLightEstimationMode(Config.LightEstimationMode.ENVIRONMENTAL_HDR);
+
+        // ✅ NEW: Enable both horizontal and vertical plane detection
+        config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL);
+
         if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
             config.setDepthMode(Config.DepthMode.AUTOMATIC);
         } else {
             config.setDepthMode(Config.DepthMode.DISABLED);
         }
+
         if (instantPlacementSettings.isInstantPlacementEnabled()) {
             config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP);
         } else {
             config.setInstantPlacementMode(Config.InstantPlacementMode.DISABLED);
         }
+
         session.configure(config);
+    }
+    // ===== VIRTUAL WALL HELPER METHODS =====
+
+    private void createVirtualWallAnchors() {
+        float[] floorCorners = cornerManager.getOrderedCorners();
+        if (floorCorners == null || floorCorners.length != 12) {
+            Toast.makeText(this, "Error getting floor corners", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        storedFloorCorners = floorCorners.clone();
+
+        float[] floorTL = Arrays.copyOfRange(floorCorners, 0, 3);
+        float[] floorTR = Arrays.copyOfRange(floorCorners, 3, 6);
+        float[] floorBL = Arrays.copyOfRange(floorCorners, 6, 9);
+        float[] floorBR = Arrays.copyOfRange(floorCorners, 9, 12);
+
+        float[] ceilTL = floorTL.clone(); ceilTL[1] += userInputRoomHeight;
+        float[] ceilTR = floorTR.clone(); ceilTR[1] += userInputRoomHeight;
+        float[] ceilBL = floorBL.clone(); ceilBL[1] += userInputRoomHeight;
+        float[] ceilBR = floorBR.clone(); ceilBR[1] += userInputRoomHeight;
+
+        visualizeRoomBox(floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR);
+        showWallSelectionDialog(floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR);
+    }
+
+    private void visualizeRoomBox(float[] floorTL, float[] floorTR, float[] floorBL, float[] floorBR,
+                                  float[] ceilTL, float[] ceilTR, float[] ceilBL, float[] ceilBR) {
+        surfaceView.queueEvent(() -> {
+            try {
+                List<Mesh> boxLines = new ArrayList<>();
+                // Floor
+                boxLines.add(createLineMesh(floorTL, floorTR));
+                boxLines.add(createLineMesh(floorTR, floorBR));
+                boxLines.add(createLineMesh(floorBR, floorBL));
+                boxLines.add(createLineMesh(floorBL, floorTL));
+                // Ceiling
+                boxLines.add(createLineMesh(ceilTL, ceilTR));
+                boxLines.add(createLineMesh(ceilTR, ceilBR));
+                boxLines.add(createLineMesh(ceilBR, ceilBL));
+                boxLines.add(createLineMesh(ceilBL, ceilTL));
+                // Verticals
+                boxLines.add(createLineMesh(floorTL, ceilTL));
+                boxLines.add(createLineMesh(floorTR, ceilTR));
+                boxLines.add(createLineMesh(floorBL, ceilBL));
+                boxLines.add(createLineMesh(floorBR, ceilBR));
+                cornerLineMeshManager.replaceMeshes(boxLines);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to visualize room box", e);
+            }
+        });
+    }
+
+    private void showWallSelectionDialog(float[] floorTL, float[] floorTR, float[] floorBL, float[] floorBR,
+                                         float[] ceilTL, float[] ceilTR, float[] ceilBL, float[] ceilBR) {
+        String[] options = {"Front Wall", "Right Wall", "Back Wall", "Left Wall"};
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Select Wall to Inspect")
+                .setItems(options, (d, i) -> createGridForSelectedWall(i, floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR))
+                .show();
+    }
+
+    private void createGridForSelectedWall(int wallIndex,
+                                           float[] floorTL, float[] floorTR, float[] floorBL, float[] floorBR,
+                                           float[] ceilTL, float[] ceilTR, float[] ceilBL, float[] ceilBR) {
+        final float[] wallCorners = new float[12];
+        final String[] wallName = {""};
+
+        // ✅ FIX: Reorder corners to match expected format (TopLeft, TopRight, BottomLeft, BottomRight)
+        switch (wallIndex) {
+            case 0: // Front Wall
+                System.arraycopy(ceilTL, 0, wallCorners, 0, 3);    // Top Left
+                System.arraycopy(ceilTR, 0, wallCorners, 3, 3);    // Top Right
+                System.arraycopy(floorTL, 0, wallCorners, 6, 3);   // Bottom Left
+                System.arraycopy(floorTR, 0, wallCorners, 9, 3);   // Bottom Right
+                wallName[0] = "Front Wall";
+                break;
+
+            case 1: // Right Wall
+                System.arraycopy(ceilTR, 0, wallCorners, 0, 3);    // Top Left
+                System.arraycopy(ceilBR, 0, wallCorners, 3, 3);    // Top Right
+                System.arraycopy(floorTR, 0, wallCorners, 6, 3);   // Bottom Left
+                System.arraycopy(floorBR, 0, wallCorners, 9, 3);   // Bottom Right
+                wallName[0] = "Right Wall";
+                break;
+
+            case 2: // Back Wall
+                System.arraycopy(ceilBR, 0, wallCorners, 0, 3);    // Top Left
+                System.arraycopy(ceilBL, 0, wallCorners, 3, 3);    // Top Right
+                System.arraycopy(floorBR, 0, wallCorners, 6, 3);   // Bottom Left
+                System.arraycopy(floorBL, 0, wallCorners, 9, 3);   // Bottom Right
+                wallName[0] = "Back Wall";
+                break;
+
+            case 3: // Left Wall
+                System.arraycopy(ceilBL, 0, wallCorners, 0, 3);    // Top Left
+                System.arraycopy(ceilTL, 0, wallCorners, 3, 3);    // Top Right
+                System.arraycopy(floorBL, 0, wallCorners, 6, 3);   // Bottom Left
+                System.arraycopy(floorTL, 0, wallCorners, 9, 3);   // Bottom Right
+                wallName[0] = "Left Wall";
+                break;
+        }
+
+        surfaceView.queueEvent(() -> {
+            try {
+                gridManager.setGridSize(GRID_ROWS, GRID_COLS);
+                gridManager.setGapSize(GRID_GAP_SIZE);
+                gridManager.initialize(wallCorners);
+                gridManager.createMeshes(render);
+
+                runOnUiThread(() -> {
+                    Toast.makeText(this, wallName[0] + " grid created!", Toast.LENGTH_SHORT).show();
+                    tvInstructions.setText("Grid on " + wallName[0] + " - Mark cells in 2D view, then capture");
+
+                    // ✅ FIX: Show all necessary UI elements
+                    btnCapture.setVisibility(View.VISIBLE);
+                    btnCapture.setText("START");
+                    btnCapture.setBackgroundColor(Color.parseColor("#2196F3")); // Blue
+
+                    // ✅ FIX: Change DONE button to "2D VIEW"
+                    btnDone.setText("2D VIEW");
+
+                    cardGridInfo.setVisibility(View.VISIBLE);
+                    tvGridSize.setText(GRID_ROWS + "×" + GRID_COLS + " Grid Active (" + wallName[0] + ")");
+                    updateVisitedCountDisplay();
+
+                    initialize2DGridView(wallCorners);
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to create wall grid", e);
+                runOnUiThread(() -> Toast.makeText(this, "Error creating grid", Toast.LENGTH_SHORT).show());
+            }
+        });
     }
 
     // ============================================================================
