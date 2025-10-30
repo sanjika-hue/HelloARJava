@@ -68,10 +68,6 @@ import android.graphics.BitmapFactory;
 import android.widget.ImageView;
 import android.widget.EditText;
 
-// Add these with your other imports at the top
-import okhttp3.*;
-import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Bitmap.CompressFormat;
@@ -116,6 +112,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private TextView tvVisitedValueIn2DView;
     private TextView tvCameraAngle;  // Shows current camera angle
     private View angleIndicator;     // Visual angle indicator
+    private TextView tvAngleStatus;
     private float currentCameraAngle = 0f;
 
     // Helpers
@@ -228,9 +225,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private Button btnConfirmHeight;
     private float userInputRoomHeight = 2.5f; // Default, but user MUST confirm
     private float[] storedFloorCorners = null;
-    // Add these fields with your other private fields
-    private static final String SERVER_URL = "http://192.168.1.40:8000";// ⚠️ CHANGE TO YOUR LAPTOP IP!
-    private OkHttpClient httpClient;
+
+
     // Update your onCreate() method - ADD THIS SECTION:
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -310,12 +306,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         floorOverlayMeshManager = new MeshManager(surfaceView);
         visitedCellManager = new VisitedCellManager(surfaceView, cornerManager, visitedCellMeshManager);
         gridManager = new GridManager();
-
-        httpClient = new OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .writeTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .build();
 
         createAngleIndicator();
 
@@ -486,17 +476,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             );
         }
     }
-
     private void createAngleIndicator() {
         RelativeLayout rootLayout = findViewById(R.id.root_layout);
 
-        // Create container for angle indicator
         LinearLayout angleContainer = new LinearLayout(this);
         angleContainer.setOrientation(LinearLayout.VERTICAL);
         angleContainer.setGravity(android.view.Gravity.CENTER);
-        angleContainer.setBackgroundColor(Color.parseColor("#CC000000")); // Semi-transparent black
+        angleContainer.setBackgroundColor(Color.parseColor("#CC000000"));
         angleContainer.setPadding(20, 15, 20, 15);
-        angleContainer.setVisibility(View.GONE); // Hidden until capture mode
+        angleContainer.setVisibility(View.GONE);
 
         RelativeLayout.LayoutParams containerParams = new RelativeLayout.LayoutParams(
                 RelativeLayout.LayoutParams.WRAP_CONTENT,
@@ -505,7 +493,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         containerParams.addRule(RelativeLayout.CENTER_HORIZONTAL);
         containerParams.topMargin = 150;
 
-        // Angle text
+        // Angle value
         tvCameraAngle = new TextView(this);
         tvCameraAngle.setTextColor(Color.WHITE);
         tvCameraAngle.setTextSize(24);
@@ -513,9 +501,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         tvCameraAngle.setText("--°");
         angleContainer.addView(tvCameraAngle);
 
-        // ✅ Status text - will update dynamically based on mode
-        TextView tvAngleStatus = new TextView(this);
-        tvAngleStatus.setTextColor(Color.parseColor("#FFEB3B")); // Yellow
+        // ✅ Status text (shows what's perfect)
+        tvAngleStatus = new TextView(this);
+        tvAngleStatus.setTextColor(Color.parseColor("#FFEB3B"));
         tvAngleStatus.setTextSize(12);
         tvAngleStatus.setText("Camera Angle");
         angleContainer.addView(tvAngleStatus);
@@ -523,6 +511,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         rootLayout.addView(angleContainer, containerParams);
         angleIndicator = angleContainer;
     }
+
+
     private void selectInspectionMode(InspectionMode mode) {
         currentMode = mode;
         modeSelectionContainer.setVisibility(View.GONE);
@@ -572,13 +562,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 Toast.makeText(this, "Height must be between 2.0m and 4.0m", Toast.LENGTH_LONG).show();
                 return;
             }
+
+            // ✅ Hide input card immediately
             cardHeightInput.setVisibility(View.GONE);
+
+            // ✅ Update instructions immediately
             tvInstructions.setText(String.format("✓ Height: %.2fm • Now tap FLOOR corner 1 of 4", userInputRoomHeight));
-            Toast.makeText(this, String.format("Height set to %.2fm. Place 4 corners on the FLOOR.", userInputRoomHeight), Toast.LENGTH_LONG).show();
+
+            // ✅ Show corner hints
+            cornerHintsContainer.setVisibility(View.VISIBLE);
+
+            Toast.makeText(this,
+                    String.format("Height set to %.2fm. Tap to place 4 corners on the FLOOR.", userInputRoomHeight),
+                    Toast.LENGTH_LONG).show();
+
         } catch (NumberFormatException e) {
             Toast.makeText(this, "Invalid height value", Toast.LENGTH_SHORT).show();
         }
     }
+
 
     private void toggleCaptureMode() {
         captureMode = !captureMode;
@@ -604,63 +606,69 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
 
 
-
     private int detectCellBelowCamera(float[] cameraPos, float[] cameraForward, float[] outAngle) {
         if (!gridManager.hasAllCorners()) {
-            Log.d(TAG, "Grid not ready");
             return -1;
         }
 
         List<GridManager.GridCell> allCells = gridManager.getAllCells();
         if (allCells == null || allCells.isEmpty()) {
-            Log.d(TAG, "No cells available");
             return -1;
         }
 
         float[] gridNormal = getGridPlaneNormal();
 
-        // ✅ CRITICAL FIX: Different angle calculation for floors vs walls
+        // ✅ FIXED: Different angle logic for floors vs walls
         float angleFromPerpendicular;
         float displayAngle;
         float threshold;
 
         if (currentMode == InspectionMode.FLOOR) {
-            // FLOOR: Camera should point DOWN (perpendicular to floor)
+            // FLOOR: Measure angle from vertical (camera should point DOWN)
+            float[] downVector = {0f, -1f, 0f};
             float dot = Math.abs(
-                    cameraForward[0] * gridNormal[0] +
-                            cameraForward[1] * gridNormal[1] +
-                            cameraForward[2] * gridNormal[2]
+                    cameraForward[0] * downVector[0] +
+                            cameraForward[1] * downVector[1] +
+                            cameraForward[2] * downVector[2]
             );
             angleFromPerpendicular = (float) Math.toDegrees(Math.acos(Math.min(1.0f, dot)));
-            displayAngle = 90f - angleFromPerpendicular; // 90° = perfect for floor
-            threshold = 30f; // ±30° from perpendicular
+            displayAngle = 90f - angleFromPerpendicular; // 90° = straight down
+            threshold = 30f;
 
         } else {
-            // WALL/VIRTUAL_WALL: Camera should point HORIZONTAL (parallel to floor plane)
-            // Calculate angle from horizontal instead of perpendicular
-            float[] upVector = {0f, 1f, 0f}; // World up vector
+            // WALL/VIRTUAL_WALL: Measure angle from HORIZONTAL plane
+            // For walls, camera should look horizontally (perpendicular to gravity)
 
-            float dotWithUp = Math.abs(
-                    cameraForward[0] * upVector[0] +
-                            cameraForward[1] * upVector[1] +
-                            cameraForward[2] * upVector[2]
+            // Project camera forward onto horizontal plane (remove Y component)
+            float[] horizontalForward = {
+                    cameraForward[0],
+                    0f,  // Remove vertical component
+                    cameraForward[2]
+            };
+
+            // Normalize horizontal projection
+            float horizontalLength = (float) Math.sqrt(
+                    horizontalForward[0] * horizontalForward[0] +
+                            horizontalForward[2] * horizontalForward[2]
             );
 
-            // Angle from horizontal plane (0° = horizontal, 90° = pointing up/down)
-            float angleFromHorizontal = (float) Math.toDegrees(Math.asin(Math.min(1.0f, dotWithUp)));
+            if (horizontalLength > 0.001f) {
+                horizontalForward[0] /= horizontalLength;
+                horizontalForward[2] /= horizontalLength;
+            }
 
-            displayAngle = angleFromHorizontal; // 0° = perfect for wall
-            angleFromPerpendicular = angleFromHorizontal; // Use this for threshold check
-            threshold = 30f; // Allow ±30° from horizontal
+            // Calculate angle from horizontal (using Y component of original vector)
+            float verticalComponent = Math.abs(cameraForward[1]);
+            displayAngle = (float) Math.toDegrees(Math.asin(Math.min(1.0f, verticalComponent)));
+            angleFromPerpendicular = displayAngle; // 0° = horizontal (perfect for walls)
+            threshold = 30f;
         }
 
-        // Store angle for UI display
         outAngle[0] = displayAngle;
         currentCameraAngle = displayAngle;
 
-        // Check alignment
+        // ✅ Check alignment
         if (angleFromPerpendicular > threshold) {
-            Log.v(TAG, "Angle check failed: " + angleFromPerpendicular + "° (threshold: " + threshold + "°)");
             return -1;
         }
 
@@ -683,29 +691,31 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         camToGrid[1] * gridNormal[1] +
                         camToGrid[2] * gridNormal[2];
 
-        // ✅ Different distance thresholds for floor vs wall
-        float distThreshold = (currentMode == InspectionMode.WALL || currentMode == InspectionMode.VIRTUAL_WALL)
-                ? 2.0f // 2.0 meters for walls (increased from 1.5m)
-                : CAPTURE_DISTANCE_THRESHOLD; // 1.0 meter for floors
+        // ✅ Distance thresholds
+        float distThreshold = (currentMode == InspectionMode.WALL ||
+                currentMode == InspectionMode.VIRTUAL_WALL)
+                ? 3.0f  // 3 meters for walls
+                : 1.5f; // 1.5 meters for floors
 
         float absHeight = Math.abs(distAlongNormal);
         if (absHeight > distThreshold) {
-            Log.v(TAG, "Camera too far: " + absHeight + "m (threshold: " + distThreshold + "m)");
             return -1;
         }
 
+        // Project camera onto wall plane
         float[] projectedPos = {
                 cameraPos[0] - distAlongNormal * gridNormal[0],
                 cameraPos[1] - distAlongNormal * gridNormal[1],
                 cameraPos[2] - distAlongNormal * gridNormal[2]
         };
 
-        // Find closest cell with larger tolerance for walls
+        // Find closest cell
         int closest = -1;
         float minDist = Float.MAX_VALUE;
-        float cellTolerance = (currentMode == InspectionMode.WALL || currentMode == InspectionMode.VIRTUAL_WALL)
-                ? 0.6f  // 60cm tolerance for walls (increased from 50cm)
-                : 0.35f; // 35cm tolerance for floors
+        float cellTolerance = (currentMode == InspectionMode.WALL ||
+                currentMode == InspectionMode.VIRTUAL_WALL)
+                ? 0.8f  // 80cm tolerance for walls
+                : 0.4f; // 40cm tolerance for floors
 
         for (int i = 0; i < allCells.size(); i++) {
             GridManager.GridCell cell = allCells.get(i);
@@ -720,39 +730,57 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }
 
-        if (closest >= 0) {
-            String mode = (currentMode == InspectionMode.FLOOR) ? "FLOOR" : "WALL";
-            Log.d(TAG, mode + " Cell " + (closest + 1) + " at " + minDist + "m, angle=" + outAngle[0] + "°");
-        }
-
         return closest;
     }
+
 
     private void updateAngleIndicator(float angle) {
         if (angleIndicator == null || tvCameraAngle == null) return;
 
         runOnUiThread(() -> {
-            // Update angle text
             tvCameraAngle.setText(String.format("%.1f°", angle));
 
-            // ✅ Different color thresholds for floor vs wall
             int color;
-            float perfectAngle = (currentMode == InspectionMode.FLOOR) ? 90f : 0f;
-            float deviation = Math.abs(angle - perfectAngle);
+            String guidance;
 
-            if (deviation < 5f) {
-                color = Color.parseColor("#4CAF50"); // Green (excellent)
-            } else if (deviation < 15f) {
-                color = Color.parseColor("#FFEB3B"); // Yellow (good)
-            } else if (deviation < 30f) {
-                color = Color.parseColor("#FF9800"); // Orange (acceptable)
+            if (currentMode == InspectionMode.FLOOR) {
+                guidance = "90° = Perfect";
+                float deviation = Math.abs(angle - 90f);
+
+                if (deviation < 5f) {
+                    color = Color.parseColor("#4CAF50"); // Green
+                } else if (deviation < 15f) {
+                    color = Color.parseColor("#FFEB3B"); // Yellow
+                } else if (deviation < 30f) {
+                    color = Color.parseColor("#FF9800"); // Orange
+                } else {
+                    color = Color.parseColor("#F44336"); // Red
+                }
+
             } else {
-                color = Color.parseColor("#F44336"); // Red (too steep/shallow)
+                // Wall: 0° is perfect (perpendicular to wall)
+                guidance = "0° = Perfect";
+
+                if (angle < 5f) {
+                    color = Color.parseColor("#4CAF50"); // Green
+                } else if (angle < 15f) {
+                    color = Color.parseColor("#FFEB3B"); // Yellow
+                } else if (angle < 30f) {
+                    color = Color.parseColor("#FF9800"); // Orange
+                } else {
+                    color = Color.parseColor("#F44336"); // Red
+                }
             }
 
             tvCameraAngle.setTextColor(color);
+
+            // ✅ Update status text
+            if (tvAngleStatus != null) {
+                tvAngleStatus.setText(guidance);
+            }
         });
     }
+
 
 
 
@@ -861,8 +889,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                 new String[]{"image/jpeg"},
                                 null
                         );
-// ✅ ADD THIS LINE HERE - Auto-upload after save
-                        uploadImageToServer(finalFile);
+
                         // Update UI
                         runOnUiThread(() -> {
                             cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
@@ -941,40 +968,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         catch (Exception e) {
             Log.e("capture9", "Capture failed", e);}
-    }
-    // Add this method anywhere in HelloArActivity (e.g., after captureCellImage)
-    private void uploadImageToServer(File imageFile) {
-        new Thread(() -> {
-            try {
-                String serverUrl = SERVER_URL + "/upload";
-
-                RequestBody requestBody = new MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
-                        .addFormDataPart("file", imageFile.getName(),
-                                RequestBody.create(imageFile, MediaType.get("image/jpeg")))
-                        .build();
-
-                Request request = new Request.Builder()
-                        .url(serverUrl)
-                        .post(requestBody)
-                        .build();
-
-                Response response = httpClient.newCall(request).execute();
-
-                if (response.isSuccessful()) {
-                    Log.d(TAG, "✅ Upload success: " + imageFile.getName());
-                    runOnUiThread(() ->
-                            Toast.makeText(this, "✅ Uploaded: " + imageFile.getName(),
-                                    Toast.LENGTH_SHORT).show()
-                    );
-                } else {
-                    Log.e(TAG, "❌ Upload failed: " + response.code());
-                }
-                response.close();
-            } catch (Exception e) {
-                Log.e(TAG, "Upload error", e);
-            }
-        }).start();
     }
     // Add this helper method
     private void updateViewButtonVisibility() {
@@ -1564,12 +1557,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
         if (currentMode == InspectionMode.VIRTUAL_WALL && cardHeightInput.getVisibility() == View.VISIBLE) {
-            showToastOnUiThread("Please confirm room height first");
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Please confirm room height first", Toast.LENGTH_SHORT).show()
+            );
             return;
         }
         // Require mode selection
         if (currentMode == InspectionMode.NONE) {
-            showToastOnUiThread("Select Floor or Wall mode first");
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Select Floor or Wall mode first", Toast.LENGTH_SHORT).show()
+            );
             return;
         }
 
@@ -1586,7 +1583,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             if (trackable instanceof Plane) {
                 Plane plane = (Plane) trackable;
 
-                // Filter by mode
                 boolean isValidPlane = false;
                 if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
                     isValidPlane = (plane.getType() == Plane.Type.HORIZONTAL_UPWARD_FACING);
@@ -1602,7 +1598,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 boolean added = cornerManager.addCorner(anchor, trackable);
                 if (added) {
                     String modeText = currentMode == InspectionMode.FLOOR ? "Floor" : "Wall";
-                    showToastOnUiThread(modeText + " Corner " + cornerManager.getCornerCount() + " placed");
+                    runOnUiThread(() ->
+                            Toast.makeText(this, modeText + " Corner " + cornerManager.getCornerCount() + " placed", Toast.LENGTH_SHORT).show()
+                    );
                     updateInstructions();
                     surfaceView.queueEvent(() -> {
                         createCornerConnectionLines();
@@ -1613,7 +1611,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
                 break;
             }
-            // ⚠️ Skip PointCloud hits — only use Plane hits
         }
     }
 
@@ -2427,14 +2424,18 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
     // ===== VIRTUAL WALL HELPER METHODS =====
 
+
     private void createVirtualWallAnchors() {
         float[] floorCorners = cornerManager.getOrderedCorners();
         if (floorCorners == null || floorCorners.length != 12) {
             Toast.makeText(this, "Error getting floor corners", Toast.LENGTH_SHORT).show();
             return;
         }
+
+        // Store floor corners
         storedFloorCorners = floorCorners.clone();
 
+        // Calculate ceiling corners
         float[] floorTL = Arrays.copyOfRange(floorCorners, 0, 3);
         float[] floorTR = Arrays.copyOfRange(floorCorners, 3, 6);
         float[] floorBL = Arrays.copyOfRange(floorCorners, 6, 9);
@@ -2445,33 +2446,59 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         float[] ceilBL = floorBL.clone(); ceilBL[1] += userInputRoomHeight;
         float[] ceilBR = floorBR.clone(); ceilBR[1] += userInputRoomHeight;
 
+        // ✅ Show visualization FIRST (immediate feedback)
         visualizeRoomBox(floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR);
-        showWallSelectionDialog(floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR);
+
+        // ✅ Then show dialog (don't block on GL thread)
+        runOnUiThread(() -> {
+            showWallSelectionDialog(floorTL, floorTR, floorBL, floorBR, ceilTL, ceilTR, ceilBL, ceilBR);
+        });
     }
+
 
     private void visualizeRoomBox(float[] floorTL, float[] floorTR, float[] floorBL, float[] floorBR,
                                   float[] ceilTL, float[] ceilTR, float[] ceilBL, float[] ceilBR) {
+
+        // ✅ Show immediate UI feedback
+        runOnUiThread(() -> {
+            tvInstructions.setText("Creating virtual room box...");
+        });
+
         surfaceView.queueEvent(() -> {
             try {
                 List<Mesh> boxLines = new ArrayList<>();
-                // Floor
+
+                // Floor edges (white)
                 boxLines.add(createLineMesh(floorTL, floorTR));
                 boxLines.add(createLineMesh(floorTR, floorBR));
                 boxLines.add(createLineMesh(floorBR, floorBL));
                 boxLines.add(createLineMesh(floorBL, floorTL));
-                // Ceiling
+
+                // Ceiling edges (cyan)
                 boxLines.add(createLineMesh(ceilTL, ceilTR));
                 boxLines.add(createLineMesh(ceilTR, ceilBR));
                 boxLines.add(createLineMesh(ceilBR, ceilBL));
                 boxLines.add(createLineMesh(ceilBL, ceilTL));
-                // Verticals
+
+                // Vertical edges (yellow)
                 boxLines.add(createLineMesh(floorTL, ceilTL));
                 boxLines.add(createLineMesh(floorTR, ceilTR));
                 boxLines.add(createLineMesh(floorBL, ceilBL));
                 boxLines.add(createLineMesh(floorBR, ceilBR));
+
                 cornerLineMeshManager.replaceMeshes(boxLines);
+
+                // ✅ Update UI after visualization is ready
+                runOnUiThread(() -> {
+                    tvInstructions.setText("Virtual room created! Select wall to inspect:");
+                });
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to visualize room box", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(HelloArActivity.this,
+                            "Failed to create visualization", Toast.LENGTH_SHORT).show();
+                });
             }
         });
     }
@@ -2488,12 +2515,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void createGridForSelectedWall(int wallIndex,
                                            float[] floorTL, float[] floorTR, float[] floorBL, float[] floorBR,
                                            float[] ceilTL, float[] ceilTR, float[] ceilBL, float[] ceilBR) {
+
         final float[] wallCorners = new float[12];
         final String[] wallName = {""};
 
-        // ✅ FIX: Reorder corners to match expected format (TopLeft, TopRight, BottomLeft, BottomRight)
+        // ✅ Correct corner ordering (counter-clockwise from top-left)
         switch (wallIndex) {
-            case 0: // Front Wall
+            case 0: // Front Wall (looking from inside room)
                 System.arraycopy(ceilTL, 0, wallCorners, 0, 3);    // Top Left
                 System.arraycopy(ceilTR, 0, wallCorners, 3, 3);    // Top Right
                 System.arraycopy(floorTL, 0, wallCorners, 6, 3);   // Bottom Left
@@ -2526,6 +2554,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 break;
         }
 
+        // ✅ Show immediate feedback
+        runOnUiThread(() -> {
+            tvInstructions.setText("Creating " + wallName[0] + " grid...");
+        });
+
+        // ✅ Create grid on GL thread
         surfaceView.queueEvent(() -> {
             try {
                 gridManager.setGridSize(GRID_ROWS, GRID_COLS);
@@ -2533,27 +2567,38 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 gridManager.initialize(wallCorners);
                 gridManager.createMeshes(render);
 
+                // ✅ Update UI immediately after grid creation
                 runOnUiThread(() -> {
-                    Toast.makeText(this, wallName[0] + " grid created!", Toast.LENGTH_SHORT).show();
-                    tvInstructions.setText("Grid on " + wallName[0] + " - Mark cells in 2D view, then capture");
+                    Toast.makeText(HelloArActivity.this,
+                            wallName[0] + " grid created!", Toast.LENGTH_SHORT).show();
 
-                    // ✅ FIX: Show all necessary UI elements
+                    tvInstructions.setText(
+                            "Grid on " + wallName[0] + " • Mark cells in 2D view, then capture");
+
+                    // Show all controls
                     btnCapture.setVisibility(View.VISIBLE);
                     btnCapture.setText("START");
-                    btnCapture.setBackgroundColor(Color.parseColor("#2196F3")); // Blue
+                    btnCapture.setBackgroundColor(Color.parseColor("#2196F3"));
 
-                    // ✅ FIX: Change DONE button to "2D VIEW"
+                    btnDone.setVisibility(View.VISIBLE);
                     btnDone.setText("2D VIEW");
+                    btnDone.setEnabled(true);
+                    btnDone.setAlpha(1.0f);
 
                     cardGridInfo.setVisibility(View.VISIBLE);
-                    tvGridSize.setText(GRID_ROWS + "×" + GRID_COLS + " Grid Active (" + wallName[0] + ")");
+                    tvGridSize.setText(GRID_ROWS + "×" + GRID_COLS + " Grid (" + wallName[0] + ")");
                     updateVisitedCountDisplay();
 
+                    // Initialize 2D view
                     initialize2DGridView(wallCorners);
                 });
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to create wall grid", e);
-                runOnUiThread(() -> Toast.makeText(this, "Error creating grid", Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> {
+                    Toast.makeText(HelloArActivity.this,
+                            "Error creating grid", Toast.LENGTH_SHORT).show();
+                });
             }
         });
     }
