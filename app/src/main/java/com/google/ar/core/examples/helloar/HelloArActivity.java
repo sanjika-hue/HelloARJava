@@ -212,7 +212,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         NONE
     }
     private InspectionMode currentMode = InspectionMode.NONE;
-
+    private Mesh floatingAnchorMesh;
+    private Shader floatingAnchorShader;
+    private float[] currentIntersectionPoint = null;
+    private int currentTargetedCell = -1;
+    private long animationStartTime = 0;
+    private float anchorPulseScale = 1.0f;
 
     private Button btnInspectFloor;
     private Button btnInspectWall;
@@ -605,134 +610,183 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
 
+    private void createFloatingAnchor() {
+        surfaceView.queueEvent(() -> {
+            try {
+                int segments = 20;
+                float radius = 0.1f; // 8cm
+                List<Float> vertices = new ArrayList<>();
+                vertices.add(0f); vertices.add(0f); vertices.add(0f); // center
+                for (int i = 0; i <= segments; i++) {
+                    float angle = (float) (2.0f * Math.PI * i / segments);
+                    vertices.add(radius * (float) Math.cos(angle));
+                    vertices.add(radius * (float) Math.sin(angle));
+                    vertices.add(0f);
+                }
+                float[] vertexArray = new float[vertices.size()];
+                for (int i = 0; i < vertices.size(); i++) vertexArray[i] = vertices.get(i);
+                FloatBuffer buffer = ByteBuffer.allocateDirect(vertexArray.length * Float.BYTES)
+                        .order(ByteOrder.nativeOrder()).asFloatBuffer();
+                buffer.put(vertexArray).position(0);
+                VertexBuffer vb = new VertexBuffer(render, 3, buffer);
+                floatingAnchorMesh = new Mesh(render, PrimitiveMode.TRIANGLE_FAN, null, new VertexBuffer[]{vb});
 
-    private int detectCellBelowCamera(float[] cameraPos, float[] cameraForward, float[] outAngle) {
-        if (!gridManager.hasAllCorners()) {
-            return -1;
-        }
-
-        List<GridManager.GridCell> allCells = gridManager.getAllCells();
-        if (allCells == null || allCells.isEmpty()) {
-            return -1;
-        }
-
-        float[] gridNormal = getGridPlaneNormal();
-
-        // ✅ FIXED: Different angle logic for floors vs walls
-        float angleFromPerpendicular;
-        float displayAngle;
-        float threshold;
-
-        if (currentMode == InspectionMode.FLOOR) {
-            // FLOOR: Measure angle from vertical (camera should point DOWN)
-            float[] downVector = {0f, -1f, 0f};
-            float dot = Math.abs(
-                    cameraForward[0] * downVector[0] +
-                            cameraForward[1] * downVector[1] +
-                            cameraForward[2] * downVector[2]
-            );
-            angleFromPerpendicular = (float) Math.toDegrees(Math.acos(Math.min(1.0f, dot)));
-            displayAngle = 90f - angleFromPerpendicular; // 90° = straight down
-            threshold = 30f;
-
-        } else {
-            // WALL/VIRTUAL_WALL: Measure angle from HORIZONTAL plane
-            // For walls, camera should look horizontally (perpendicular to gravity)
-
-            // Project camera forward onto horizontal plane (remove Y component)
-            float[] horizontalForward = {
-                    cameraForward[0],
-                    0f,  // Remove vertical component
-                    cameraForward[2]
-            };
-
-            // Normalize horizontal projection
-            float horizontalLength = (float) Math.sqrt(
-                    horizontalForward[0] * horizontalForward[0] +
-                            horizontalForward[2] * horizontalForward[2]
-            );
-
-            if (horizontalLength > 0.001f) {
-                horizontalForward[0] /= horizontalLength;
-                horizontalForward[2] /= horizontalLength;
+                String vShader = "#version 300 es\nuniform mat4 u_MVP;\nlayout(location=0) in vec4 a_Pos;\nvoid main(){gl_Position=u_MVP*a_Pos;}";
+                String fShader = "#version 300 es\nprecision mediump float;\nuniform vec4 u_Color;\nout vec4 o_FragColor;\nvoid main(){o_FragColor=u_Color;}";
+                floatingAnchorShader = Shader.createFromSource(render, vShader, fShader, null);
+                if (floatingAnchorShader == null) {
+                    Log.e("fanchor", " Shader is null! Device may not support OpenGL ES 3.0.");
+                    floatingAnchorMesh = null; // avoid partial state
+                    return;
+                }
+                Log.d("fanchor", " Floating anchor created");
+            } catch (Exception e) {
+                Log.e("fanchor", " Failed to create floating anchor", e);
             }
+        });
+    }
 
-            // Calculate angle from horizontal (using Y component of original vector)
-            float verticalComponent = Math.abs(cameraForward[1]);
-            displayAngle = (float) Math.toDegrees(Math.asin(Math.min(1.0f, verticalComponent)));
-            angleFromPerpendicular = displayAngle; // 0° = horizontal (perfect for walls)
-            threshold = 30f;
+    private int detectCellAndIntersection(float[] cameraPos, float[] cameraForward,
+                                          float[] outAngle, float[] outIntersection) {
+        if (!gridManager.hasAllCorners()) return -1;
+        List<GridManager.GridCell> cells = gridManager.getAllCells();
+        if (cells == null || cells.isEmpty()) return -1;
+
+        // === 1. Compute plane from grid cells ===
+        float[] p1 = cells.get(0).topLeft;
+        float[] p2 = cells.get(0).topRight;
+        float[] p3 = cells.get(0).bottomLeft;
+
+        float[] planePoint = p1;
+        float[] v1 = {p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]};
+        float[] v2 = {p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]};
+
+        float[] normal = new float[3];
+        normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
+        normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
+        normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
+
+        float len = (float) Math.sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+        if (len > 1e-6f) {
+            normal[0] /= len; normal[1] /= len; normal[2] /= len;
         }
 
+        // === 2. Compute angle relative to this plane ===
+        float dotWithNormal = Math.abs(
+                cameraForward[0] * normal[0] +
+                        cameraForward[1] * normal[1] +
+                        cameraForward[2] * normal[2]
+        );
+        dotWithNormal = Math.min(1.0f, Math.max(0.0f, dotWithNormal));
+        float angleFromPerpendicular = (float) Math.toDegrees(Math.acos(dotWithNormal));
+
+        float displayAngle;
+        if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
+            displayAngle = 90f - angleFromPerpendicular;
+        } else {
+            displayAngle = angleFromPerpendicular;
+        }
         outAngle[0] = displayAngle;
         currentCameraAngle = displayAngle;
 
-        // ✅ Check alignment
-        if (angleFromPerpendicular > threshold) {
-            return -1;
+        // === 3. Validate angle ===
+        boolean angleValid;
+        if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
+            angleValid = (displayAngle >= 60f && displayAngle <= 90f);
+        } else {
+            angleValid = (displayAngle >= 0f && displayAngle <= 30f);
         }
+        if (!angleValid) return -1;
 
-        // Project camera position onto grid plane
-        float[] ordered = cornerManager.getOrderedCorners();
-        float[] gridCenter = {
-                (ordered[0] + ordered[3] + ordered[6] + ordered[9]) / 4,
-                (ordered[1] + ordered[4] + ordered[7] + ordered[10]) / 4,
-                (ordered[2] + ordered[5] + ordered[8] + ordered[11]) / 4
+        // === 4. Ray-plane intersection (using correct plane) ===
+        float denom = normal[0]*cameraForward[0] + normal[1]*cameraForward[1] + normal[2]*cameraForward[2];
+        if (Math.abs(denom) < 0.0001f) return -1;
+
+        float[] camToPlane = {
+                planePoint[0] - cameraPos[0],
+                planePoint[1] - cameraPos[1],
+                planePoint[2] - cameraPos[2]
         };
+        float numer = normal[0]*camToPlane[0] + normal[1]*camToPlane[1] + normal[2]*camToPlane[2];
+        float t = numer / denom;
+        if (t < 0.1f || t > 10f) return -1;
 
-        float[] camToGrid = {
-                cameraPos[0] - gridCenter[0],
-                cameraPos[1] - gridCenter[1],
-                cameraPos[2] - gridCenter[2]
+        float[] intersection = {
+                cameraPos[0] + cameraForward[0] * t,
+                cameraPos[1] + cameraForward[1] * t,
+                cameraPos[2] + cameraForward[2] * t
         };
+        if (outIntersection != null) System.arraycopy(intersection, 0, outIntersection, 0, 3);
 
-        float distAlongNormal =
-                camToGrid[0] * gridNormal[0] +
-                        camToGrid[1] * gridNormal[1] +
-                        camToGrid[2] * gridNormal[2];
-
-        // ✅ Distance thresholds
-        float distThreshold = (currentMode == InspectionMode.WALL ||
-                currentMode == InspectionMode.VIRTUAL_WALL)
-                ? 3.0f  // 3 meters for walls
-                : 1.5f; // 1.5 meters for floors
-
-        float absHeight = Math.abs(distAlongNormal);
-        if (absHeight > distThreshold) {
-            return -1;
-        }
-
-        // Project camera onto wall plane
-        float[] projectedPos = {
-                cameraPos[0] - distAlongNormal * gridNormal[0],
-                cameraPos[1] - distAlongNormal * gridNormal[1],
-                cameraPos[2] - distAlongNormal * gridNormal[2]
-        };
-
-        // Find closest cell
-        int closest = -1;
+        // === 5. Find closest cell ===
+        int targetCell = -1;
         float minDist = Float.MAX_VALUE;
-        float cellTolerance = (currentMode == InspectionMode.WALL ||
-                currentMode == InspectionMode.VIRTUAL_WALL)
-                ? 0.8f  // 80cm tolerance for walls
-                : 0.4f; // 40cm tolerance for floors
-
-        for (int i = 0; i < allCells.size(); i++) {
-            GridManager.GridCell cell = allCells.get(i);
-            float dx = projectedPos[0] - cell.center[0];
-            float dy = projectedPos[1] - cell.center[1];
-            float dz = projectedPos[2] - cell.center[2];
-            float dist = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-            if (dist < cellTolerance && dist < minDist) {
+        float tolerance = (currentMode == InspectionMode.FLOOR) ? 0.4f : 0.8f;
+        for (int i = 0; i < cells.size(); i++) {
+            GridManager.GridCell cell = cells.get(i);
+            float dx = intersection[0] - cell.center[0];
+            float dy = intersection[1] - cell.center[1];
+            float dz = intersection[2] - cell.center[2];
+            float dist = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
+            if (dist < tolerance && dist < minDist) {
                 minDist = dist;
-                closest = i;
+                targetCell = i;
             }
         }
-
-        return closest;
+        return targetCell;
     }
 
+    private void drawFloatingAnchor(float[] point, int cellIndex) {
+        Log.d("drawAnchor", "Drawing at: " + Arrays.toString(point));
+        if (floatingAnchorMesh == null || floatingAnchorShader == null || point == null) return;
+        try {
+            // Build model matrix (no rotation)
+            float[] temp = new float[16];
+            Matrix.setIdentityM(temp, 0);
+            Matrix.translateM(temp, 0, point[0], point[1], point[2]);
+
+            // Pulsing animation
+            long now = System.currentTimeMillis();
+            if (animationStartTime == 0) animationStartTime = now;
+            float t = (now - animationStartTime) / 1000f;
+            anchorPulseScale = 1.0f + 0.2f * (float) Math.sin(t * 3.0f);
+            Matrix.scaleM(temp, 0, anchorPulseScale, anchorPulseScale, 1.0f);
+
+            // MVP
+            float[] mvp = new float[16];
+            Matrix.multiplyMM(mvp, 0, viewMatrix, 0, temp, 0);
+            Matrix.multiplyMM(mvp, 0, projectionMatrix, 0, mvp, 0);
+
+            // Color
+            float[] color;
+            if (cellIndex < 0) color = new float[]{1.0f, 0.0f, 0.0f, 1.0f}; // bright red, opaque
+            else if (cellImagePaths.containsKey(cellIndex)) color = new float[]{1, 0.6f, 0, 0.8f};
+            else if (visitedCells[cellIndex]) color = new float[]{0.3f, 0.9f, 0.3f, 0.8f};
+            else color = new float[]{0.9f, 0.3f, 0.3f, 0.8f};
+
+            // Render
+            GLES30.glEnable(GLES30.GL_BLEND);
+            GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+            floatingAnchorShader.setMat4("u_MVP", mvp);
+            floatingAnchorShader.setVec4("u_Color", color);
+            render.draw(floatingAnchorMesh, floatingAnchorShader);
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+            GLES30.glDisable(GLES30.GL_BLEND);
+        } catch (Exception e) {
+            Log.e("draw anchor", "Error drawing floating anchor", e);
+        }
+    }
+
+    private void crossProduct(float[] a, float[] b, float[] r) {
+        r[0] = a[1]*b[2] - a[2]*b[1];
+        r[1] = a[2]*b[0] - a[0]*b[2];
+        r[2] = a[0]*b[1] - a[1]*b[0];
+    }
+    private void normalize(float[] v) {
+        float len = (float) Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+        if (len > 0.0001f) { v[0]/=len; v[1]/=len; v[2]/=len; }
+    }
 
     private void updateAngleIndicator(float angle) {
         if (angleIndicator == null || tvCameraAngle == null) return;
@@ -780,8 +834,49 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
     }
+    private float[] getScreenCenterRay(Camera camera, float[] viewMatrix, float[] projMatrix) {
+        float[] viewProj = new float[16];
+        Matrix.multiplyMM(viewProj, 0, projMatrix, 0, viewMatrix, 0);
+        float[] invViewProj = new float[16];
+        if (!Matrix.invertM(invViewProj, 0, viewProj, 0)) {
+            // Fallback to camera forward
+            float[] quat = new float[4];
+            camera.getPose().getRotationQuaternion(quat, 0);
+            return new float[]{
+                    -(2.0f * (quat[0] * quat[2] - quat[3] * quat[1])),
+                    -(2.0f * (quat[1] * quat[2] + quat[3] * quat[0])),
+                    -(1.0f - 2.0f * (quat[0] * quat[0] + quat[1] * quat[1]))
+            };
+        }
 
+        float[] near4 = new float[4];
+        float[] far4 = new float[4];
+        // ✅ FIXED: Added srcVecOffset = 0 (6th argument)
+        Matrix.multiplyMV(near4, 0, invViewProj, 0, new float[]{0, 0, -1, 1}, 0);
+        Matrix.multiplyMV(far4, 0, invViewProj, 0, new float[]{0, 0, 1, 1}, 0);
 
+        float[] near = {
+                near4[0] / near4[3],
+                near4[1] / near4[3],
+                near4[2] / near4[3]
+        };
+        float[] far = {
+                far4[0] / far4[3],
+                far4[1] / far4[3],
+                far4[2] / far4[3]
+        };
+
+        float[] dir = {
+                far[0] - near[0],
+                far[1] - near[1],
+                far[2] - near[2]
+        };
+        float len = (float) Math.sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        if (len > 0) {
+            dir[0] /= len; dir[1] /= len; dir[2] /= len;
+        }
+        return dir;
+    }
 
 
 
@@ -1944,6 +2039,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
             // â­ NEW: Inline shader for cell overlays with visible green color
             cellOverlayShader = createCellOverlayShader(render);
+            createFloatingAnchor();
 
         } catch (IOException e) {
             Log.e(TAG, "Failed to load shader", e);
@@ -2015,87 +2111,123 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         Camera camera = frame.getCamera();
+        camera.getProjectionMatrix(projectionMatrix, 0, Z_NEAR, Z_FAR);
+        camera.getViewMatrix(viewMatrix, 0);
         camera.getPose().getTranslation(lastCameraPosition, 0);
 
         // === MODIFIED: Only show angle guidance in capture mode ===
         if (captureMode && gridManager.hasAllCorners()) {
-            // Get camera direction
-            float[] quaternion = new float[4];
-            camera.getPose().getRotationQuaternion(quaternion, 0);
-            float x = quaternion[0], y = quaternion[1], z = quaternion[2], w = quaternion[3];
+         /*   float[] quat = new float[4];
+            camera.getPose().getRotationQuaternion(quat, 0);
+            float x = quat[0], y = quat[1], z = quat[2], w = quat[3];
+            float[] camForward = getScreenCenterRay(camera, viewMatrix, projectionMatrix);*/
 
-            float[] cameraForward = {
-                    -(2.0f * (x * z - w * y)),
-                    -(2.0f * (y * z + w * x)),
-                    -(1.0f - 2.0f * (x * x + y * y))
-            };
-
-            // Detect cell ONLY FOR GUIDANCE
+            float[] camForward = getScreenCenterRay(camera, viewMatrix, projectionMatrix);
             float[] angleOut = new float[1];
-            int cellBelow = detectCellBelowCamera(lastCameraPosition, cameraForward, angleOut);
+            float[] intersectionOut = new float[3];
+            // ✅ Step 1: Compute angle using CORRECT plane (from gridManager)
+            ;
+            boolean angleValid = false;
 
-            // ✅ Update UI every frame
+// Get grid plane normal from actual grid (not cornerManager!)
+            List<GridManager.GridCell> cells = gridManager.getAllCells();
+            if (cells != null && !cells.isEmpty()) {
+                float[] p1 = cells.get(0).topLeft;
+                float[] p2 = cells.get(0).topRight;
+                float[] p3 = cells.get(0).bottomLeft;
+                float[] v1 = {p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]};
+                float[] v2 = {p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]};
+                float[] normal = {
+                        v1[1] * v2[2] - v1[2] * v2[1],
+                        v1[2] * v2[0] - v1[0] * v2[2],
+                        v1[0] * v2[1] - v1[1] * v2[0]
+                };
+                float len = (float) Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+                if (len > 1e-6f) {
+                    normal[0] /= len;
+                    normal[1] /= len;
+                    normal[2] /= len;
+                }
+
+                // Compute angle relative to this plane
+                float dot = Math.abs(
+                        camForward[0] * normal[0] + camForward[1] * normal[1] + camForward[2] * normal[2]
+                );
+                dot = Math.min(1f, Math.max(0f, dot));
+                float angleFromPerp = (float) Math.toDegrees(Math.acos(dot));
+
+                float displayAngle;
+                if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
+                    displayAngle = 90f - angleFromPerp; // 90° = perfect for floor/wall
+                } else {
+                    displayAngle = angleFromPerp;
+                }
+                angleOut[0] = displayAngle;
+
+                // Validate angle
+                // ✅ Always compute intersection — anchor will follow camera
+                float[] planePoint = p1;
+                float denom = normal[0] * camForward[0] + normal[1] * camForward[1] + normal[2] * camForward[2];
+                if (Math.abs(denom) > 0.001f) {
+                    float[] camToPlane = {
+                            planePoint[0] - lastCameraPosition[0],
+                            planePoint[1] - lastCameraPosition[1],
+                            planePoint[2] - lastCameraPosition[2]
+                    };
+                    float numer = normal[0] * camToPlane[0] + normal[1] * camToPlane[1] + normal[2] * camToPlane[2];
+                    float t = numer / denom;
+                    if (t >= 0.1f && t <= 10f) {
+                        intersectionOut[0] = lastCameraPosition[0] + camForward[0] * t;
+                        intersectionOut[1] = lastCameraPosition[1] + camForward[1] * t;
+                        intersectionOut[2] = lastCameraPosition[2] + camForward[2] * t;
+                        currentIntersectionPoint = intersectionOut.clone();
+                    } else {
+                        currentIntersectionPoint = null;
+                    }
+                 } else {
+                    currentIntersectionPoint = null;
+                }
+            }
+
+// ✅ Step 2: Now detect cell (strict logic)
+            int cellBelow = detectCellAndIntersection(lastCameraPosition, camForward, angleOut, null);
+            currentTargetedCell = cellBelow;
             updateAngleIndicator(angleOut[0]);
 
-            // ✅ Show which cell user is targeting
             if (cellBelow >= 0) {
-                boolean shouldCapture = visitedCells[cellBelow];
-                boolean alreadyCaptured = cellImagePaths.containsKey(cellBelow);
-
                 currentStableCell = cellBelow;
-
+                boolean captured = cellImagePaths.containsKey(cellBelow);
+                boolean marked = visitedCells[cellBelow];
                 runOnUiThread(() -> {
-                    int captured = cellImagePaths.size();
-
-                    // ✅ Different angle guidance for floor vs wall
-                    String angleGuidance;
-                    if (currentMode == InspectionMode.FLOOR) {
-                        angleGuidance = String.format("%.1f° (90° = Perfect)", angleOut[0]);
-                    } else {
-                        angleGuidance = String.format("%.1f° (0° = Perfect)", angleOut[0]);
-                    }
-
-                    if (alreadyCaptured) {
-                        tvInstructions.setText(
-                                String.format("✓ Cell %d captured • %s (%d/%d)",
-                                        cellBelow + 1, angleGuidance, captured, GRID_ROWS * GRID_COLS)
-                        );
+                    int capturedCount = cellImagePaths.size();
+                    String guidance = (currentMode == InspectionMode.FLOOR)
+                            ? String.format("%.1f° (90° = Perfect)", angleOut[0])
+                            : String.format("%.1f° (0° = Perfect)", angleOut[0]);
+                    if (captured) {
+                        tvInstructions.setText(String.format("✓ Cell %d captured • %s (%d/%d)",
+                                cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
                         btnCapture.setEnabled(false);
                         btnCapture.setAlpha(0.5f);
-                    } else if (shouldCapture) {
-                        tvInstructions.setText(
-                                String.format("📸 Cell %d ready • %s • PRESS CAPTURE (%d/%d)",
-                                        cellBelow + 1, angleGuidance, captured, GRID_ROWS * GRID_COLS)
-                        );
+                    } else if (marked) {
+                        tvInstructions.setText(String.format("🎯 Cell %d ready • %s • PRESS CAPTURE (%d/%d)",
+                                cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
                         btnCapture.setEnabled(true);
                         btnCapture.setAlpha(1.0f);
                     } else {
-                        tvInstructions.setText(
-                                String.format("⚠️ Cell %d not marked • Mark in 2D view first",
-                                        cellBelow + 1)
-                        );
+                        tvInstructions.setText(String.format("⚠️ Cell %d not marked • Go to 2D view", cellBelow + 1));
                         btnCapture.setEnabled(false);
                         btnCapture.setAlpha(0.5f);
                     }
                 });
-
                 highlightTargetCell(cellBelow);
-
             } else {
                 currentStableCell = -1;
                 runOnUiThread(() -> {
                     int captured = cellImagePaths.size();
-                    String angleGuidance;
-                    if (currentMode == InspectionMode.FLOOR) {
-                        angleGuidance = String.format("%.1f° (need 60-90°)", angleOut[0]);
-                    } else {
-                        angleGuidance = String.format("%.1f° (need 0-30°)", angleOut[0]);
-                    }
-
-                    tvInstructions.setText(
-                            String.format("📐 Position over cell • %s (%d/%d)",
-                                    angleGuidance, captured, GRID_ROWS * GRID_COLS)
-                    );
+                    String guidance = (currentMode == InspectionMode.FLOOR)
+                            ? String.format("%.1f° (need 60–90°)", angleOut[0])
+                            : String.format("%.1f° (need 0–30°)", angleOut[0]);
+                    tvInstructions.setText(String.format("📐 Aim at grid • %s (%d/%d)", guidance, captured, GRID_ROWS * GRID_COLS));
                     btnCapture.setEnabled(false);
                     btnCapture.setAlpha(0.5f);
                 });
@@ -2206,6 +2338,32 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 Log.e(TAG, "Grid drawing failed: " + e.getMessage());
             }
         }
+        Log.d("DEBUG", "Intersection: " + Arrays.toString(currentIntersectionPoint));
+        // === TEST: Floating anchor 1m in front of camera ===
+   /*    if (floatingAnchorMesh != null && floatingAnchorShader != null) {
+            float[] quat = new float[4];
+            camera.getPose().getRotationQuaternion(quat, 0);
+            float x = quat[0], y = quat[1], z = quat[2], w = quat[3];
+            float[] camForward = {
+                    -(2.0f * (x * z - w * y)),
+                    -(2.0f * (y * z + w * x)),
+                    -(1.0f - 2.0f * (x * x + y * y))
+            };
+            float[] testPos = {
+                    lastCameraPosition[0] + camForward[0] * 1.0f,
+                    lastCameraPosition[1] + camForward[1] * 1.0f,
+                    lastCameraPosition[2] + camForward[2] * 1.0f
+            };
+            drawFloatingAnchor(testPos, -1);
+        }*/
+       /* if (floatingAnchorMesh != null && floatingAnchorShader != null) {
+            float[] testPos = {0.0f, 0.0f, -1.0f}; // 1 meter in front of camera origin
+            drawFloatingAnchor(testPos, -1);
+        }*/
+       if (captureMode && currentIntersectionPoint != null) {
+            drawFloatingAnchor(currentIntersectionPoint, currentTargetedCell);
+        }
+
 
         // Restore OpenGL state
         GLES30.glDepthFunc(GLES30.GL_LEQUAL);
@@ -2244,10 +2402,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
 
-        // ✅ Mark as in progress
+        // Mark as in progress
         isCaptureInProgress = true;
 
-        // ✅ Disable button
+        // Disable button
         runOnUiThread(() -> {
             btnCapture.setEnabled(false);
             btnCapture.setText("CAPTURING...");
