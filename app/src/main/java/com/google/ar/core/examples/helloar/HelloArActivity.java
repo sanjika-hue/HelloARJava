@@ -160,6 +160,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private MeshManager visitedCellMeshManager;
     private VisitedCellManager visitedCellManager;
 
+
+
     // Add these fields with your other managers
     private GridManager gridManager;
     private boolean gridViewVisible = false;
@@ -200,6 +202,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final float CAPTURE_ANGLE_THRESHOLD = 30f; // Degrees from vertical
     private static final float CAPTURE_DISTANCE_THRESHOLD = 1.0f; // meters from cell
     private HashMap<Integer, String> cellImagePaths = new HashMap<>();
+    private boolean[] capturedCells = new boolean[GRID_ROWS * GRID_COLS];
     private long lastCaptureCheckTime = 0;
     private static final long CAPTURE_CHECK_INTERVAL = 250;
 
@@ -230,6 +233,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private Button btnConfirmHeight;
     private float userInputRoomHeight = 2.5f; // Default, but user MUST confirm
     private float[] storedFloorCorners = null;
+
+    private long lastAutoCaptureTime = 0;
+    private static final long AUTO_CAPTURE_COOLDOWN_MS = 3000; // 3 seconds
+
 
 
     // Update your onCreate() method - ADD THIS SECTION:
@@ -614,7 +621,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         surfaceView.queueEvent(() -> {
             try {
                 int segments = 20;
-                float radius = 0.1f; // 8cm
+                float radius = 0.18f; // 8cm
                 List<Float> vertices = new ArrayList<>();
                 vertices.add(0f); vertices.add(0f); vertices.add(0f); // center
                 for (int i = 0; i <= segments; i++) {
@@ -739,32 +746,47 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void drawFloatingAnchor(float[] point, int cellIndex) {
         Log.d("drawAnchor", "Drawing at: " + Arrays.toString(point));
         if (floatingAnchorMesh == null || floatingAnchorShader == null || point == null) return;
+
         try {
-            // Build model matrix (no rotation)
+            // === ✅ Dynamic Scaling Based on Camera Distance ===
+            float[] camPos = lastCameraPosition;
+            float distance = (float) Math.sqrt(
+                    Math.pow(point[0] - camPos[0], 2) +
+                            Math.pow(point[1] - camPos[1], 2) +
+                            Math.pow(point[2] - camPos[2], 2)
+            );
+
+            // Scale: stays visually same size regardless of distance
+            float baseScale = Math.max(0.02f, distance * 0.05f);
+
+            // === Build model matrix ===
             float[] temp = new float[16];
             Matrix.setIdentityM(temp, 0);
             Matrix.translateM(temp, 0, point[0], point[1], point[2]);
 
-            // Pulsing animation
+            // === ✅ Pulsing animation remains same ===
             long now = System.currentTimeMillis();
             if (animationStartTime == 0) animationStartTime = now;
             float t = (now - animationStartTime) / 1000f;
             anchorPulseScale = 1.0f + 0.2f * (float) Math.sin(t * 3.0f);
-            Matrix.scaleM(temp, 0, anchorPulseScale, anchorPulseScale, 1.0f);
 
-            // MVP
+            // Apply both distance scaling + pulse
+            float totalScale = baseScale * anchorPulseScale;
+            Matrix.scaleM(temp, 0, totalScale, totalScale, totalScale);
+
+            // === MVP ===
             float[] mvp = new float[16];
             Matrix.multiplyMM(mvp, 0, viewMatrix, 0, temp, 0);
             Matrix.multiplyMM(mvp, 0, projectionMatrix, 0, mvp, 0);
 
-            // Color
+            // === ✅ Color logic ===
             float[] color;
-            if (cellIndex < 0) color = new float[]{1.0f, 0.0f, 0.0f, 1.0f}; // bright red, opaque
-            else if (cellImagePaths.containsKey(cellIndex)) color = new float[]{1, 0.6f, 0, 0.8f};
-            else if (visitedCells[cellIndex]) color = new float[]{0.3f, 0.9f, 0.3f, 0.8f};
-            else color = new float[]{0.9f, 0.3f, 0.3f, 0.8f};
+            if (cellIndex < 0) color = new float[]{1.0f, 0.0f, 0.0f, 1.0f};          // red → no valid cell
+            else if (cellImagePaths.containsKey(cellIndex)) color = new float[]{1, 0.6f, 0, 0.8f}; // orange → captured
+            else if (visitedCells[cellIndex]) color = new float[]{0.3f, 0.9f, 0.3f, 0.8f};         // green → ready
+            else color = new float[]{0.9f, 0.3f, 0.3f, 0.8f};                                     // reddish → unmarked
 
-            // Render
+            // === Render ===
             GLES30.glEnable(GLES30.GL_BLEND);
             GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
             GLES30.glDisable(GLES30.GL_DEPTH_TEST);
@@ -773,10 +795,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             render.draw(floatingAnchorMesh, floatingAnchorShader);
             GLES30.glEnable(GLES30.GL_DEPTH_TEST);
             GLES30.glDisable(GLES30.GL_BLEND);
+
         } catch (Exception e) {
             Log.e("draw anchor", "Error drawing floating anchor", e);
         }
     }
+
+
 
     private void crossProduct(float[] a, float[] b, float[] r) {
         r[0] = a[1]*b[2] - a[2]*b[1];
@@ -878,7 +903,70 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return dir;
     }
 
+    private void drawCameraIconOnCell(float[] cellCenter, float scale) {
+        // Simple camera icon as two rectangles
+        float iconSize = 0.05f * scale; // Adjust size based on distance
+        float halfSize = iconSize / 2;
 
+        // Body
+        float[] bodyVertices = {
+                cellCenter[0] - halfSize, cellCenter[1], cellCenter[2] - halfSize,
+                cellCenter[0] + halfSize, cellCenter[1], cellCenter[2] - halfSize,
+                cellCenter[0] + halfSize, cellCenter[1], cellCenter[2] + halfSize,
+                cellCenter[0] - halfSize, cellCenter[1], cellCenter[2] + halfSize
+        };
+
+        // Lens (circle)
+        float lensRadius = halfSize * 0.4f;
+        float[] lensCenter = {cellCenter[0], cellCenter[1], cellCenter[2]};
+
+        // Create shader for icon
+        String vShader = "#version 300 es\n" +
+                "uniform mat4 u_MVP;\n" +
+                "layout(location=0) in vec4 a_Pos;\n" +
+                "void main(){gl_Position=u_MVP*a_Pos;}";
+        String fShader = "#version 300 es\n" +
+                "precision mediump float;\n" +
+                "uniform vec4 u_Color;\n" +
+                "out vec4 o_FragColor;\n" +
+                "void main(){o_FragColor=u_Color;}";
+        Shader iconShader = Shader.createFromSource(render, vShader, fShader, null);
+        if (iconShader == null) return;
+
+        GLES30.glEnable(GLES30.GL_BLEND);
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST);
+
+        // Body mesh
+        FloatBuffer bodyBuffer = ByteBuffer.allocateDirect(bodyVertices.length * Float.BYTES)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        bodyBuffer.put(bodyVertices).position(0);
+        VertexBuffer bodyVb = new VertexBuffer(render, 3, bodyBuffer);
+        Mesh bodyMesh = new Mesh(render, PrimitiveMode.TRIANGLE_FAN, null, new VertexBuffer[]{bodyVb});
+        float[] mvp = new float[16];
+        Matrix.multiplyMM(mvp, 0, projectionMatrix, 0, viewMatrix, 0);
+        iconShader.setMat4("u_MVP", mvp);
+        iconShader.setVec4("u_Color", new float[]{1.0f, 0.6f, 0.0f, 0.8f}); // Orange
+        render.draw(bodyMesh, iconShader);
+
+        // Draw lens (simplified as a point or small quad)
+        float[] lensVertices = {
+                lensCenter[0] - lensRadius, lensCenter[1], lensCenter[2] - lensRadius,
+                lensCenter[0] + lensRadius, lensCenter[1], lensCenter[2] - lensRadius,
+                lensCenter[0] + lensRadius, lensCenter[1], lensCenter[2] + lensRadius,
+                lensCenter[0] - lensRadius, lensCenter[1], lensCenter[2] + lensRadius
+        };
+        FloatBuffer lensBuffer = ByteBuffer.allocateDirect(lensVertices.length * Float.BYTES)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        lensBuffer.put(lensVertices).position(0);
+        VertexBuffer lensVb = new VertexBuffer(render, 3, lensBuffer);
+        Mesh lensMesh = new Mesh(render, PrimitiveMode.TRIANGLE_FAN, null, new VertexBuffer[]{lensVb});
+        iconShader.setVec4("u_Color", new float[]{1.0f, 0.6f, 0.0f, 1.0f}); // Solid orange
+        render.draw(lensMesh, iconShader);
+
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST);
+        GLES30.glDisable(GLES30.GL_BLEND);
+    }
 
 
 //  private long lastCaptureTime = 0;
@@ -988,7 +1076,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         // Update UI
                         runOnUiThread(() -> {
                             cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
-
+                            // ✅ NEW: Mark as captured
+                            if (finalIndex < capturedCells.length) {
+                                capturedCells[finalIndex] = true;
+                            }
                             // Vibrate
                             try {
                                 Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
@@ -2034,8 +2125,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     .setTexture("u_DfgTexture", dfgTexture);
 
             // Line shader for corner connections
-            lineShader = Shader.createFromAssets(
-                    render, "shaders/line.vert", "shaders/line.frag", null);
+            // 🔹 Enhanced inline line shader (supports color)
+            String lineVertShader =
+                    "#version 300 es\n" +
+                            "uniform mat4 u_ModelViewProjection;\n" +
+                            "layout(location = 0) in vec4 a_Position;\n" +
+                            "void main() {\n" +
+                            "    gl_Position = u_ModelViewProjection * a_Position;\n" +
+                            "}\n";
+
+            String lineFragShader =
+                    "#version 300 es\n" +
+                            "precision mediump float;\n" +
+                            "uniform vec4 u_Color;\n" +
+                            "out vec4 o_FragColor;\n" +
+                            "void main() {\n" +
+                            "    o_FragColor = u_Color;\n" +
+                            "}\n";
+
+            lineShader = Shader.createFromSource(render, lineVertShader, lineFragShader, null);
+
+// Default line color = white
+            if (lineShader != null) {
+                lineShader.setVec4("u_Color", new float[]{1.0f, 1.0f, 1.0f, 1.0f});
+            }
 
             // â­ NEW: Inline shader for cell overlays with visible green color
             cellOverlayShader = createCellOverlayShader(render);
@@ -2115,26 +2228,18 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         camera.getViewMatrix(viewMatrix, 0);
         camera.getPose().getTranslation(lastCameraPosition, 0);
 
-        // === MODIFIED: Only show angle guidance in capture mode ===
+        // === CAPTURE MODE LOGIC (Enhanced) ===
         if (captureMode && gridManager.hasAllCorners()) {
-         /*   float[] quat = new float[4];
-            camera.getPose().getRotationQuaternion(quat, 0);
-            float x = quat[0], y = quat[1], z = quat[2], w = quat[3];
-            float[] camForward = getScreenCenterRay(camera, viewMatrix, projectionMatrix);*/
-
             float[] camForward = getScreenCenterRay(camera, viewMatrix, projectionMatrix);
             float[] angleOut = new float[1];
-            float[] intersectionOut = new float[3];
-            // ✅ Step 1: Compute angle using CORRECT plane (from gridManager)
-            ;
-            boolean angleValid = false;
 
-// Get grid plane normal from actual grid (not cornerManager!)
             List<GridManager.GridCell> cells = gridManager.getAllCells();
             if (cells != null && !cells.isEmpty()) {
                 float[] p1 = cells.get(0).topLeft;
                 float[] p2 = cells.get(0).topRight;
                 float[] p3 = cells.get(0).bottomLeft;
+
+                // Compute plane normal
                 float[] v1 = {p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]};
                 float[] v2 = {p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]};
                 float[] normal = {
@@ -2142,83 +2247,103 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         v1[2] * v2[0] - v1[0] * v2[2],
                         v1[0] * v2[1] - v1[1] * v2[0]
                 };
-                float len = (float) Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+                float len = (float) Math.sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
                 if (len > 1e-6f) {
-                    normal[0] /= len;
-                    normal[1] /= len;
-                    normal[2] /= len;
+                    normal[0] /= len; normal[1] /= len; normal[2] /= len;
                 }
 
-                // Compute angle relative to this plane
-                float dot = Math.abs(
-                        camForward[0] * normal[0] + camForward[1] * normal[1] + camForward[2] * normal[2]
-                );
+                // Compute angle relative to plane
+                float dot = Math.abs(camForward[0]*normal[0] + camForward[1]*normal[1] + camForward[2]*normal[2]);
                 dot = Math.min(1f, Math.max(0f, dot));
                 float angleFromPerp = (float) Math.toDegrees(Math.acos(dot));
-
-                float displayAngle;
-                if (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL) {
-                    displayAngle = 90f - angleFromPerp; // 90° = perfect for floor/wall
-                } else {
-                    displayAngle = angleFromPerp;
-                }
+                float displayAngle = (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL)
+                        ? 90f - angleFromPerp : angleFromPerp;
                 angleOut[0] = displayAngle;
 
-                // Validate angle
-                // ✅ Always compute intersection — anchor will follow camera
+                // Compute ray-plane intersection
                 float[] planePoint = p1;
-                float denom = normal[0] * camForward[0] + normal[1] * camForward[1] + normal[2] * camForward[2];
+                float denom = normal[0]*camForward[0] + normal[1]*camForward[1] + normal[2]*camForward[2];
                 if (Math.abs(denom) > 0.001f) {
                     float[] camToPlane = {
                             planePoint[0] - lastCameraPosition[0],
                             planePoint[1] - lastCameraPosition[1],
                             planePoint[2] - lastCameraPosition[2]
                     };
-                    float numer = normal[0] * camToPlane[0] + normal[1] * camToPlane[1] + normal[2] * camToPlane[2];
+                    float numer = normal[0]*camToPlane[0] + normal[1]*camToPlane[1] + normal[2]*camToPlane[2];
                     float t = numer / denom;
-                    if (t >= 0.1f && t <= 10f) {
-                        intersectionOut[0] = lastCameraPosition[0] + camForward[0] * t;
-                        intersectionOut[1] = lastCameraPosition[1] + camForward[1] * t;
-                        intersectionOut[2] = lastCameraPosition[2] + camForward[2] * t;
-                        currentIntersectionPoint = intersectionOut.clone();
+                    if (t >= 0.05f && t <= 20f) {
+                        currentIntersectionPoint = new float[]{
+                                lastCameraPosition[0] + camForward[0] * t,
+                                lastCameraPosition[1] + camForward[1] * t,
+                                lastCameraPosition[2] + camForward[2] * t
+                        };
                     } else {
                         currentIntersectionPoint = null;
                     }
-                 } else {
+                } else {
                     currentIntersectionPoint = null;
                 }
             }
 
-// ✅ Step 2: Now detect cell (strict logic)
+            // Detect which cell is targeted
             int cellBelow = detectCellAndIntersection(lastCameraPosition, camForward, angleOut, null);
             currentTargetedCell = cellBelow;
             updateAngleIndicator(angleOut[0]);
 
-            if (cellBelow >= 0) {
-                currentStableCell = cellBelow;
+            if (cellBelow >= 0 && cellBelow < visitedCells.length) {
+                // Auto-mark as visited
+                if (!visitedCells[cellBelow]) {
+                    visitedCells[cellBelow] = true;
+                    runOnUiThread(() -> {
+                        updateVisitedCountDisplay();
+                        if (gridView2D != null) {
+                            gridView2D.updateVisitedCells(visitedCells);
+                        }
+                    });
+                }
+
                 boolean captured = cellImagePaths.containsKey(cellBelow);
-                boolean marked = visitedCells[cellBelow];
+                currentStableCell = cellBelow;
+
+                // Auto-capture if visited and not yet captured
+                if (visitedCells[cellBelow] && !captured) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastAutoCaptureTime >= AUTO_CAPTURE_COOLDOWN_MS) {
+                        lastAutoCaptureTime = now;
+                        runOnUiThread(() -> {
+                            if (captureMode && cellBelow >= 0 && cellBelow < visitedCells.length
+                                    && visitedCells[cellBelow] && !cellImagePaths.containsKey(cellBelow)) {
+                                captureCurrentCell();
+                                Log.d(TAG, "Auto-captured cell: " + (cellBelow + 1));
+                            }
+                        });
+                    }
+                }
+
+                // Update UI
                 runOnUiThread(() -> {
                     int capturedCount = cellImagePaths.size();
                     String guidance = (currentMode == InspectionMode.FLOOR)
                             ? String.format("%.1f° (90° = Perfect)", angleOut[0])
                             : String.format("%.1f° (0° = Perfect)", angleOut[0]);
+
                     if (captured) {
                         tvInstructions.setText(String.format("✓ Cell %d captured • %s (%d/%d)",
                                 cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
                         btnCapture.setEnabled(false);
                         btnCapture.setAlpha(0.5f);
-                    } else if (marked) {
-                        tvInstructions.setText(String.format("🎯 Cell %d ready • %s • PRESS CAPTURE (%d/%d)",
+                    } else if (visitedCells[cellBelow]) {
+                        tvInstructions.setText(String.format("🎯 Cell %d ready • %s • AUTO-CAPTURING... (%d/%d)",
                                 cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
                         btnCapture.setEnabled(true);
                         btnCapture.setAlpha(1.0f);
                     } else {
-                        tvInstructions.setText(String.format("⚠️ Cell %d not marked • Go to 2D view", cellBelow + 1));
+                        tvInstructions.setText(String.format("⚠️ Cell %d not marked — aim steadily", cellBelow + 1));
                         btnCapture.setEnabled(false);
                         btnCapture.setAlpha(0.5f);
                     }
                 });
+
                 highlightTargetCell(cellBelow);
             } else {
                 currentStableCell = -1;
@@ -2227,17 +2352,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     String guidance = (currentMode == InspectionMode.FLOOR)
                             ? String.format("%.1f° (need 60–90°)", angleOut[0])
                             : String.format("%.1f° (need 0–30°)", angleOut[0]);
-                    tvInstructions.setText(String.format("📐 Aim at grid • %s (%d/%d)", guidance, captured, GRID_ROWS * GRID_COLS));
+                    tvInstructions.setText(String.format("📐 Aim at grid • %s (%d/%d)",
+                            guidance, captured, GRID_ROWS * GRID_COLS));
                     btnCapture.setEnabled(false);
                     btnCapture.setAlpha(0.5f);
                 });
             }
         }
 
-        // ... rest of drawing code ...
-
-
-        // Handle user tap for corner placement
+        // Handle tap for corner placement (outside capture mode logic)
         handleTapForCornerPlacement(frame, camera);
 
         // Configure background renderer
@@ -2260,7 +2383,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             try (Image depthImage = frame.acquireDepthImage16Bits()) {
                 backgroundRenderer.updateCameraDepthTexture(depthImage);
             } catch (NotYetAvailableException e) {
-                // Depth not available yet
+                // Depth not ready yet
             }
         }
 
@@ -2291,7 +2414,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         if (camera.getTrackingState() == TrackingState.PAUSED) return;
 
-        // Get camera matrices
         camera.getProjectionMatrix(projectionMatrix, 0, Z_NEAR, Z_FAR);
         camera.getViewMatrix(viewMatrix, 0);
 
@@ -2300,7 +2422,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             drawAnchor(wrappedAnchor.getAnchor());
         }
 
-        // Draw corner connection lines
+        // Draw corner lines
         if (!cornerLineMeshManager.isEmpty() && lineShader != null) {
             Matrix.setIdentityM(modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
@@ -2308,62 +2430,52 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             cornerLineMeshManager.drawAll(render, lineShader);
         }
 
-        // Draw grid overlay
+        // === DRAW GRID WITH ENHANCED VISUALS ===
         if (gridManager != null && cellOverlayShader != null && lineShader != null) {
             try {
                 Matrix.setIdentityM(modelMatrix, 0);
                 Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
-
                 cellOverlayShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
                 lineShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
 
                 List<GridManager.GridCell> allCells = gridManager.getAllCells();
+
+                // Fill cells based on state
                 for (int i = 0; i < allCells.size(); i++) {
                     GridManager.GridCell cell = allCells.get(i);
-
-                    float[] cellColor;
-                    if (i < visitedCells.length && visitedCells[i]) {
-                        cellColor = new float[]{0.3f, 0.8f, 0.4f, 0.7f}; // Green for visited
+                    float[] color;
+                    if (cellImagePaths.containsKey(i)) {
+                        // ✅ CAPTURED = Sky Blue
+                        color = new float[]{0.5f, 0.8f, 1.0f, 0.7f}; // Sky blue
+                    } else if (i < visitedCells.length && visitedCells[i]) {
+                        // ✅ VISITED = Green
+                        color = new float[]{0.2f, 0.9f, 0.3f, 0.7f}; // Bright green
                     } else {
-                        cellColor = new float[]{0.7f, 0.7f, 0.7f, 0.3f}; // Gray for unvisited
+                        // ✅ UNVISITED = Light Gray
+                        color = new float[]{0.7f, 0.7f, 0.7f, 0.3f}; // Light gray
                     }
-
-                    drawSingleCell(cell, cellOverlayShader, cellColor);
+                    drawSingleCell(cell, cellOverlayShader, color);
                 }
 
-                float[] borderColor = {1.0f, 1.0f, 1.0f, 1.0f};
-                gridManager.drawBorders(render, lineShader, borderColor);
+                // Grid borders (white)
+                gridManager.drawBorders(render, lineShader, new float[]{1.0f, 1.0f, 1.0f, 1.0f});
+
+                // ✅ Red outline for captured cells
+             /*   for (int i = 0; i < allCells.size(); i++) {
+                    if (cellImagePaths.containsKey(i)) {
+                        drawCellCapturedIndicator(allCells.get(i), lineShader);
+                    }
+                }*/
 
             } catch (Exception e) {
                 Log.e(TAG, "Grid drawing failed: " + e.getMessage());
             }
         }
-        Log.d("DEBUG", "Intersection: " + Arrays.toString(currentIntersectionPoint));
-        // === TEST: Floating anchor 1m in front of camera ===
-   /*    if (floatingAnchorMesh != null && floatingAnchorShader != null) {
-            float[] quat = new float[4];
-            camera.getPose().getRotationQuaternion(quat, 0);
-            float x = quat[0], y = quat[1], z = quat[2], w = quat[3];
-            float[] camForward = {
-                    -(2.0f * (x * z - w * y)),
-                    -(2.0f * (y * z + w * x)),
-                    -(1.0f - 2.0f * (x * x + y * y))
-            };
-            float[] testPos = {
-                    lastCameraPosition[0] + camForward[0] * 1.0f,
-                    lastCameraPosition[1] + camForward[1] * 1.0f,
-                    lastCameraPosition[2] + camForward[2] * 1.0f
-            };
-            drawFloatingAnchor(testPos, -1);
-        }*/
-       /* if (floatingAnchorMesh != null && floatingAnchorShader != null) {
-            float[] testPos = {0.0f, 0.0f, -1.0f}; // 1 meter in front of camera origin
-            drawFloatingAnchor(testPos, -1);
-        }*/
-       if (captureMode && currentIntersectionPoint != null) {
+
+        // Draw floating anchor (only in capture mode with valid intersection)
+        if (captureMode && currentIntersectionPoint != null) {
             drawFloatingAnchor(currentIntersectionPoint, currentTargetedCell);
         }
-
 
         // Restore OpenGL state
         GLES30.glDepthFunc(GLES30.GL_LEQUAL);
@@ -2778,7 +2890,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         private Paint distancePaint;
         private float cellViewSize;
         private float[] cameraPosition;
-
+        private Paint redBorderPaint; // ← Add this field
         /**
          * Represents a single cell in the 2D grid view
          */
@@ -2786,6 +2898,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             public final int cellNumber;
             public final int row;
             public final int col;
+
             public boolean visited;
             public Paint fillPaint;
             public RectF rect;
@@ -2833,6 +2946,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             borderPaint.setColor(Color.DKGRAY);
             borderPaint.setStyle(Paint.Style.STROKE);
             borderPaint.setStrokeWidth(3f);
+
+            // ✅ Add this:
+            redBorderPaint = new Paint();
+            redBorderPaint.setColor(Color.RED);
+            redBorderPaint.setStyle(Paint.Style.STROKE);
+            redBorderPaint.setStrokeWidth(6f); // or 4f, as desired
+
+
 
             textPaint = new Paint();
             textPaint.setColor(Color.BLACK);
@@ -2981,10 +3102,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 canvas.drawText("Generating Grid...", getWidth() / 2f, getHeight() / 2f, textPaint);
                 return;
             }
+
             for (GridCell2D cell : cells) {
-                // Draw the cell background
+                int cellIdx = cell.row * GRID_COLS + cell.col;
+
+
+                // ✅ Update fill color based on state
+                if (cellImagePaths.containsKey(cellIdx)) {
+                    cell.fillPaint.setColor(Color.parseColor("#87CEEB")); // ✅ Captured: Sky Blue
+                } else if (cell.visited) {
+                    cell.fillPaint.setColor(Color.parseColor("#4CAF50")); // ✅ Visited: Green
+                } else {
+                    cell.fillPaint.setColor(Color.WHITE); // Unvisited
+                }
+
+                // Draw filled background (FILL style assumed in cell.fillPaint)
                 canvas.drawRoundRect(cell.rect, 10f, 10f, cell.fillPaint);
-                canvas.drawRoundRect(cell.rect, 10f, 10f, borderPaint);
+
+                // ✅ Draw border: red for captured, default otherwise
+           /*     if (cellImagePaths.containsKey(cellIdx)) {
+                    canvas.drawRoundRect(cell.rect, 10f, 10f, redBorderPaint);
+                } else {
+                    canvas.drawRoundRect(cell.rect, 10f, 10f, borderPaint);
+                }*/
+
                 // Draw cell number
                 String num = String.valueOf(cell.cellNumber);
                 float x = cell.rect.centerX();
@@ -2999,25 +3140,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     canvas.drawText(distText, x, yDist, distancePaint);
                 }
 
-                // ✅ Draw small camera icon if image exists for this cell (ONLY ONCE!)
-                int cellIdx = cell.row * GRID_COLS + cell.col;
+                // ✅ Draw camera icon for captured cells
                 if (cellImagePaths.containsKey(cellIdx)) {
-                    Paint capturePaint = new Paint();
-                    capturePaint.setColor(Color.parseColor("#FF5722")); // Orange
+                    // Reuse a pre-created paint if possible, or keep as-is if rare
+                    Paint capturePaint = new Paint(); // ← Still okay here (only drawn for captured cells, which are few)
+
+                    capturePaint.setColor(Color.parseColor("#87CEEB")); // ✅ Sky Blue
                     capturePaint.setStyle(Paint.Style.FILL);
                     float iconSize = cell.rect.width() / 5f;
                     float iconX = cell.rect.right - iconSize * 1.5f;
                     float iconY = cell.rect.top + iconSize * 1.5f;
-                    // Camera body
+
                     RectF cameraBody = new RectF(
-                            iconX - iconSize/2,
-                            iconY - iconSize/3,
-                            iconX + iconSize/2,
-                            iconY + iconSize/3
+                            iconX - iconSize / 2,
+                            iconY - iconSize / 3,
+                            iconX + iconSize / 2,
+                            iconY + iconSize / 3
                     );
                     canvas.drawRoundRect(cameraBody, 2f, 2f, capturePaint);
-                    // Lens
-                    canvas.drawCircle(iconX, iconY, iconSize/4, capturePaint);
+                    canvas.drawCircle(iconX, iconY, iconSize / 4, capturePaint);
                 }
             }
         }
