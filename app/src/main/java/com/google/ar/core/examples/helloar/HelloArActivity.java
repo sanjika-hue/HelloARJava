@@ -76,7 +76,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import android.graphics.BitmapFactory;
-
+import okhttp3.OkHttpClient;
+import okhttp3.MultipartBody;
+import okhttp3.RequestBody;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.MediaType;
 /**
  * Refactored HelloArActivity with proper separation of concerns
  */
@@ -238,6 +243,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final long AUTO_CAPTURE_COOLDOWN_MS = 3000; // 3 seconds
 
 
+    private Map<Integer, String> cellQualityStatus = new HashMap<>();
 
     // Update your onCreate() method - ADD THIS SECTION:
     @Override
@@ -358,45 +364,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         updateInstructions();
     }
 
-    /*   private void showCapturedImages() {
-           File imgDir = new File(getExternalFilesDir(null), "cell_images");
-           if (!imgDir.exists() || imgDir.list() == null || imgDir.list().length == 0) {
-               Toast.makeText(this, "No images captured yet", Toast.LENGTH_SHORT).show();
-               return;
-           }
 
-           File[] imageFiles = imgDir.listFiles((dir, name) -> name.endsWith(".jpg"));
-           if (imageFiles == null || imageFiles.length == 0) {
-               Toast.makeText(this, "No images found", Toast.LENGTH_SHORT).show();
-               return;
-           }
-
-           // Sort by name (chronological)
-           Arrays.sort(imageFiles, (f1, f2) -> f1.getName().compareTo(f2.getName()));
-
-           // Build list of image paths
-           List<String> imagePaths = new ArrayList<>();
-           for (File f : imageFiles) {
-               imagePaths.add(f.getAbsolutePath());
-           }
-
-           // Show image picker dialog
-           AlertDialog.Builder builder =
-                   new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert);
-
-           builder.setTitle("Select an image to view");
-           builder.setItems(
-                   imagePaths.stream()
-                           .map(path -> new File(path).getName())
-                           .toArray(String[]::new),
-                   (dialog, which) -> {
-                       String selectedPath = imagePaths.get(which);
-                       showFullScreenImage(selectedPath);
-                   }
-           );
-           builder.setNegativeButton("Cancel", null);
-           builder.show();
-       }*/
     private void showCapturedImages() {
         // ✅ Scan the SAME public folder where images are saved
         File imgDir = new File(
@@ -803,15 +771,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
 
 
-    private void crossProduct(float[] a, float[] b, float[] r) {
-        r[0] = a[1]*b[2] - a[2]*b[1];
-        r[1] = a[2]*b[0] - a[0]*b[2];
-        r[2] = a[0]*b[1] - a[1]*b[0];
-    }
-    private void normalize(float[] v) {
-        float len = (float) Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
-        if (len > 0.0001f) { v[0]/=len; v[1]/=len; v[2]/=len; }
-    }
+
 
     private void updateAngleIndicator(float angle) {
         if (angleIndicator == null || tvCameraAngle == null) return;
@@ -903,70 +863,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return dir;
     }
 
-    private void drawCameraIconOnCell(float[] cellCenter, float scale) {
-        // Simple camera icon as two rectangles
-        float iconSize = 0.05f * scale; // Adjust size based on distance
-        float halfSize = iconSize / 2;
 
-        // Body
-        float[] bodyVertices = {
-                cellCenter[0] - halfSize, cellCenter[1], cellCenter[2] - halfSize,
-                cellCenter[0] + halfSize, cellCenter[1], cellCenter[2] - halfSize,
-                cellCenter[0] + halfSize, cellCenter[1], cellCenter[2] + halfSize,
-                cellCenter[0] - halfSize, cellCenter[1], cellCenter[2] + halfSize
-        };
-
-        // Lens (circle)
-        float lensRadius = halfSize * 0.4f;
-        float[] lensCenter = {cellCenter[0], cellCenter[1], cellCenter[2]};
-
-        // Create shader for icon
-        String vShader = "#version 300 es\n" +
-                "uniform mat4 u_MVP;\n" +
-                "layout(location=0) in vec4 a_Pos;\n" +
-                "void main(){gl_Position=u_MVP*a_Pos;}";
-        String fShader = "#version 300 es\n" +
-                "precision mediump float;\n" +
-                "uniform vec4 u_Color;\n" +
-                "out vec4 o_FragColor;\n" +
-                "void main(){o_FragColor=u_Color;}";
-        Shader iconShader = Shader.createFromSource(render, vShader, fShader, null);
-        if (iconShader == null) return;
-
-        GLES30.glEnable(GLES30.GL_BLEND);
-        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA);
-        GLES30.glDisable(GLES30.GL_DEPTH_TEST);
-
-        // Body mesh
-        FloatBuffer bodyBuffer = ByteBuffer.allocateDirect(bodyVertices.length * Float.BYTES)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        bodyBuffer.put(bodyVertices).position(0);
-        VertexBuffer bodyVb = new VertexBuffer(render, 3, bodyBuffer);
-        Mesh bodyMesh = new Mesh(render, PrimitiveMode.TRIANGLE_FAN, null, new VertexBuffer[]{bodyVb});
-        float[] mvp = new float[16];
-        Matrix.multiplyMM(mvp, 0, projectionMatrix, 0, viewMatrix, 0);
-        iconShader.setMat4("u_MVP", mvp);
-        iconShader.setVec4("u_Color", new float[]{1.0f, 0.6f, 0.0f, 0.8f}); // Orange
-        render.draw(bodyMesh, iconShader);
-
-        // Draw lens (simplified as a point or small quad)
-        float[] lensVertices = {
-                lensCenter[0] - lensRadius, lensCenter[1], lensCenter[2] - lensRadius,
-                lensCenter[0] + lensRadius, lensCenter[1], lensCenter[2] - lensRadius,
-                lensCenter[0] + lensRadius, lensCenter[1], lensCenter[2] + lensRadius,
-                lensCenter[0] - lensRadius, lensCenter[1], lensCenter[2] + lensRadius
-        };
-        FloatBuffer lensBuffer = ByteBuffer.allocateDirect(lensVertices.length * Float.BYTES)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        lensBuffer.put(lensVertices).position(0);
-        VertexBuffer lensVb = new VertexBuffer(render, 3, lensBuffer);
-        Mesh lensMesh = new Mesh(render, PrimitiveMode.TRIANGLE_FAN, null, new VertexBuffer[]{lensVb});
-        iconShader.setVec4("u_Color", new float[]{1.0f, 0.6f, 0.0f, 1.0f}); // Solid orange
-        render.draw(lensMesh, iconShader);
-
-        GLES30.glEnable(GLES30.GL_DEPTH_TEST);
-        GLES30.glDisable(GLES30.GL_BLEND);
-    }
 
 
 //  private long lastCaptureTime = 0;
@@ -1093,7 +990,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                     String.format("✓ Cell %d saved • %d more to go",
                                             finalIndex + 1, remaining),
                                     Toast.LENGTH_SHORT).show();
-
+                            uploadImageToServer(finalFile, finalIndex);
                             updateVisitedCountDisplay();
                             updateViewButtonVisibility();
 
@@ -1154,6 +1051,83 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         catch (Exception e) {
             Log.e("capture9", "Capture failed", e);}
+    }
+    private void uploadImageToServer(File imageFile, int cellIndex) {
+        new Thread(() -> {
+            try {
+                OkHttpClient client = new OkHttpClient();
+                RequestBody body = new MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("file", imageFile.getName(),
+                                RequestBody.create(imageFile, MediaType.parse("image/jpeg")))
+                        .build();
+                Request request = new Request.Builder()
+                        .url("http://10.75.89.33:8000/upload/")
+                        .post(body)
+                        .build();
+
+                try (Response response = client.newCall(request).execute()) {
+                    String responseBody = response.body() != null ? response.body().string() : "{}";
+                    Log.d("Upload", "Server response: " + responseBody);
+
+                    // ✅ Extract image_id
+                    int imageId = -1;
+                    if (responseBody.contains("\"image_id\":")) {
+                        int start = responseBody.indexOf("\"image_id\":") + 11;
+                        int end = responseBody.indexOf(",", start);
+                        if (end == -1) end = responseBody.indexOf("}", start);
+                        try {
+                            imageId = Integer.parseInt(responseBody.substring(start, end).trim());
+                        } catch (Exception ignored) {}
+                    }
+
+                    if (imageId != -1) {
+                        // ✅ Start polling for final quality status
+                        pollQualityStatus(imageId, cellIndex);
+                    }
+                }
+            } catch (Exception e) {
+                Log.e("Upload", "Failed", e);
+                runOnUiThread(() ->
+                        Toast.makeText(this, "📤 Upload failed", Toast.LENGTH_SHORT).show()
+                );
+            }
+        }).start();
+    }
+
+    private void pollQualityStatus(int imageId, int cellIndex) {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    OkHttpClient client = new OkHttpClient();
+                    Request request = new Request.Builder()
+                            .url("http://10.75.89.33:8000/status/" + imageId)
+                            .build();
+                    Response response = client.newCall(request).execute();
+                    String json = response.body().string();
+
+                    if (json.contains("\"quality_status\":\"passed\"")) {
+                        update2DGrid(cellIndex, "passed");
+                        break;
+                    } else if (json.contains("\"quality_status\":\"failed\"")) {
+                        update2DGrid(cellIndex, "failed");
+                        break;
+                    }
+
+                    Thread.sleep(2000); // Poll every 2 seconds
+                } catch (Exception e) {
+                    break;
+                }
+            }
+        }).start();
+    }
+
+    private void update2DGrid(int cellIndex, String status) {
+        runOnUiThread(() -> {
+            if (gridView2D != null) {
+                gridView2D.updateCellQuality(cellIndex, status);
+            }
+        });
     }
     // Add this helper method
     private void updateViewButtonVisibility() {
@@ -1317,30 +1291,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
      * This allows us to detect if the camera is pointing perpendicular to the grid,
      * regardless of how the grid is tilted in 3D space.
      */
-    private float[] getGridPlaneNormal() {
-        if (!cornerManager.hasAllCorners()) {
-            return new float[]{0f, 1f, 0f}; // Default up vector
-        }
-        float[] orderedCoordinates = cornerManager.getOrderedCorners();
-        if (orderedCoordinates == null || orderedCoordinates.length != 12) {
-            Log.e(TAG, "Invalid corner coordinates");
-            return new float[]{0f, 1f, 0f};
-        }
-        float[] p1 = Arrays.copyOfRange(orderedCoordinates, 0, 3);
-        float[] p2 = Arrays.copyOfRange(orderedCoordinates, 3, 6);
-        float[] p3 = Arrays.copyOfRange(orderedCoordinates, 6, 9);
-        float[] v1 = {p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]};
-        float[] v2 = {p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]};
-        float[] normal = new float[3];
-        normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
-        normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
-        normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
-        float len = (float) Math.sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
-        if (len > 0) {
-            normal[0] /= len; normal[1] /= len; normal[2] /= len;
-        }
-        return normal;
-    }
+
     // â­ NEW: Update the updateInstructions() method:
 
     private void updateInstructions() {
@@ -1891,44 +1842,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return false;
     }
 
-    // UPDATE onDestroy() to cleanup grid manager
-  /*  @Override
-    protected void onDestroy() {
-        if (captureExecutor != null) {
-            captureExecutor.shutdown();
-        }
-        if (session != null) {
-            session.close();
-            session = null;
-        }
 
-        // Clean up all meshes on GL thread
-        if (surfaceView != null) {
-            surfaceView.queueEvent(() -> {
-                cornerLineMeshManager.cleanup();
-                visitedCellMeshManager.cleanup();
-                floorOverlayMeshManager.cleanup();
-                gridManager.cleanup(); // ADD THIS LINE
-
-                if (pointCloudMesh != null) {
-                    try {
-                        pointCloudMesh.close();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error closing point cloud mesh: " + e.getMessage());
-                    }
-                }
-                if (virtualObjectMesh != null) {
-                    try {
-                        virtualObjectMesh.close();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Error closing virtual object mesh: " + e.getMessage());
-                    }
-                }
-            });
-        }
-
-        super.onDestroy();
-    }*/
     @Override
     protected void onDestroy() {
         if (captureExecutor != null) {
@@ -2891,6 +2805,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         private float cellViewSize;
         private float[] cameraPosition;
         private Paint redBorderPaint; // ← Add this field
+        // Add this inside Custom2DGridView
+        private Map<Integer, String> cellQualityStatusMap = new HashMap<>();
         /**
          * Represents a single cell in the 2D grid view
          */
@@ -2937,7 +2853,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             init();
         }
-
+        public void updateCellQuality(int cellIndex, String qualityStatus) {
+            cellQualityStatusMap.put(cellIndex, qualityStatus);
+            invalidate(); // Triggers onDraw() to update visuals
+        }
         /**
          * Initialize paints for drawing
          */
@@ -3106,25 +3025,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             for (GridCell2D cell : cells) {
                 int cellIdx = cell.row * GRID_COLS + cell.col;
 
-
-                // ✅ Update fill color based on state
+                // ✅ Determine fill color based on capture + quality status
                 if (cellImagePaths.containsKey(cellIdx)) {
-                    cell.fillPaint.setColor(Color.parseColor("#87CEEB")); // ✅ Captured: Sky Blue
+                    // Cell is captured → check quality status
+                    String quality = cellQualityStatusMap.get(cellIdx);
+                    if ("passed".equals(quality)) {
+                        cell.fillPaint.setColor(Color.parseColor("#4CAF50")); // 🟢 Green = passed
+                    } else if ("failed".equals(quality)) {
+                        cell.fillPaint.setColor(Color.parseColor("#F44336")); // 🔴 Red = failed
+                    } else {
+                        cell.fillPaint.setColor(Color.parseColor("#87CEEB")); // 🟦 Sky blue = captured, pending/unknown
+                    }
                 } else if (cell.visited) {
-                    cell.fillPaint.setColor(Color.parseColor("#4CAF50")); // ✅ Visited: Green
+                    cell.fillPaint.setColor(Color.parseColor("#81C784")); // 🟢 Light green = visited, not captured
                 } else {
-                    cell.fillPaint.setColor(Color.WHITE); // Unvisited
+                    cell.fillPaint.setColor(Color.WHITE); // ⚪ Unvisited
                 }
 
-                // Draw filled background (FILL style assumed in cell.fillPaint)
+                // Draw filled background
                 canvas.drawRoundRect(cell.rect, 10f, 10f, cell.fillPaint);
-
-                // ✅ Draw border: red for captured, default otherwise
-           /*     if (cellImagePaths.containsKey(cellIdx)) {
-                    canvas.drawRoundRect(cell.rect, 10f, 10f, redBorderPaint);
-                } else {
-                    canvas.drawRoundRect(cell.rect, 10f, 10f, borderPaint);
-                }*/
 
                 // Draw cell number
                 String num = String.valueOf(cell.cellNumber);
@@ -3142,10 +3061,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
                 // ✅ Draw camera icon for captured cells
                 if (cellImagePaths.containsKey(cellIdx)) {
-                    // Reuse a pre-created paint if possible, or keep as-is if rare
-                    Paint capturePaint = new Paint(); // ← Still okay here (only drawn for captured cells, which are few)
-
-                    capturePaint.setColor(Color.parseColor("#87CEEB")); // ✅ Sky Blue
+                    Paint capturePaint = new Paint();
+                    String quality = cellQualityStatusMap.get(cellIdx);
+                    if ("passed".equals(quality)) {
+                        capturePaint.setColor(Color.parseColor("#4CAF50"));
+                    } else if ("failed".equals(quality)) {
+                        capturePaint.setColor(Color.parseColor("#F44336"));
+                    } else {
+                        capturePaint.setColor(Color.parseColor("#87CEEB"));
+                    }
                     capturePaint.setStyle(Paint.Style.FILL);
                     float iconSize = cell.rect.width() / 5f;
                     float iconX = cell.rect.right - iconSize * 1.5f;
