@@ -2,11 +2,11 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
 android {
-    namespace "com.google.ar.core.examples.helloar"
+    namespace "com.google.ar.core.examples.dodomap"
     compileSdkVersion 34
 
     defaultConfig {
-        applicationId "com.google.ar.core.examples.helloar"
+        applicationId "com.google.ar.core.examples.dodomap"
         minSdkVersion 24
         targetSdkVersion 34
         versionCode 1
