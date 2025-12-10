@@ -101,6 +101,22 @@ public class YuvConverter {
     }
 
     /**
+     * Convenience helper to convert an ARCore Image into an NV21 byte array.
+     */
+    public static byte[] imageToNV21(Image image) {
+        if (image == null) {
+            Log.e(TAG, "imageToNV21 called with null image");
+            return null;
+        }
+        try {
+            return manualConversionNV21(image.getPlanes(), image.getWidth(), image.getHeight());
+        } catch (Exception e) {
+            Log.e(TAG, "imageToNV21 failed", e);
+            return null;
+        }
+    }
+
+    /**
      * Manual conversion from YUV_420_888 to NV21
      * NV21 format: Y plane + interleaved VU planes
      */
@@ -159,6 +175,163 @@ public class YuvConverter {
 
         } catch (Exception e) {
             Log.e(TAG, "NV21 conversion error", e);
+            return null;
+        }
+    }
+
+    /**
+     * Save a cropped JPEG from raw YUV byte array
+     * This method creates a JPEG from the full YUV frame but crops it first
+     *
+     * @param yuvData Full frame YUV data in NV21 format
+     * @param fullWidth Full frame width
+     * @param fullHeight Full frame height
+     * @param cropX Top-left X coordinate of crop region
+     * @param cropY Top-left Y coordinate of crop region
+     * @param cropWidth Width of crop region
+     * @param cropHeight Height of crop region
+     * @param outputFile Target JPEG file
+     * @param quality JPEG quality (1-100)
+     * @return true if successful
+     */
+    public static boolean saveImageFromByteArray(byte[] yuvData, int fullWidth, int fullHeight,
+                                                 int cropX, int cropY, int cropWidth, int cropHeight,
+                                                 File outputFile, int quality) {
+        if (yuvData == null || outputFile == null) {
+            Log.e(TAG, "Null yuvData or outputFile");
+            return false;
+        }
+
+        if (cropWidth <= 0 || cropHeight <= 0) {
+            Log.e(TAG, "Invalid crop dimensions: " + cropWidth + "x" + cropHeight);
+            return false;
+        }
+
+        FileOutputStream fos = null;
+        YuvImage yuvImage = null;
+        byte[] croppedNv21 = null;
+
+        try {
+            Log.d(TAG, String.format("Saving cropped image from byte array: full=%dx%d, crop=[%d,%d,%dx%d] quality=%d%%",
+                    fullWidth, fullHeight, cropX, cropY, cropWidth, cropHeight, quality));
+
+            // Step 1: Extract the cropped Y, U, V planes from the NV21 data
+            croppedNv21 = cropNV21(yuvData, fullWidth, fullHeight, cropX, cropY, cropWidth, cropHeight);
+
+            if (croppedNv21 == null) {
+                Log.e(TAG, "Failed to crop NV21 data");
+                return false;
+            }
+
+            // Step 2: Create YuvImage from cropped data
+            yuvImage = new YuvImage(croppedNv21, ImageFormat.NV21, cropWidth, cropHeight, null);
+            fos = new FileOutputStream(outputFile);
+
+            // Step 3: Compress to JPEG (now cropped size)
+            boolean success = yuvImage.compressToJpeg(
+                    new Rect(0, 0, cropWidth, cropHeight),
+                    quality,
+                    fos
+            );
+
+            if (success) {
+                Log.d(TAG, "✓ Cropped image saved successfully");
+            } else {
+                Log.e(TAG, "✗ JPEG compression of cropped image failed");
+            }
+
+            return success;
+
+        } catch (OutOfMemoryError e) {
+            Log.e(TAG, "❌ OUT OF MEMORY during cropped save", e);
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Cropped save failed", e);
+            return false;
+        } finally {
+            croppedNv21 = null;
+            yuvImage = null;
+
+            if (fos != null) {
+                try {
+                    fos.flush();
+                    fos.close();
+                } catch (IOException e) {
+                    Log.w(TAG, "Failed to close file stream", e);
+                }
+            }
+
+            System.gc();
+        }
+    }
+
+    /**
+     * Crop an NV21 image buffer
+     * NV21 format: Y plane (full resolution) + interleaved VU planes (half resolution)
+     *
+     * @return Cropped NV21 data, or null if failed
+     */
+    private static byte[] cropNV21(byte[] originalNv21, int originalWidth, int originalHeight,
+                                   int cropX, int cropY, int cropWidth, int cropHeight) {
+        try {
+            // Validate crop region
+            if (cropX < 0 || cropY < 0 ||
+                    cropX + cropWidth > originalWidth ||
+                    cropY + cropHeight > originalHeight) {
+                Log.w(TAG, "Crop region out of bounds, clamping");
+                cropX = Math.max(0, cropX);
+                cropY = Math.max(0, cropY);
+                cropWidth = Math.min(cropWidth, originalWidth - cropX);
+                cropHeight = Math.min(cropHeight, originalHeight - cropY);
+            }
+
+            // Ensure crop dimensions are even (required for YUV 4:2:0)
+            if (cropWidth % 2 != 0) cropWidth--;
+            if (cropHeight % 2 != 0) cropHeight--;
+
+            // Allocate output buffer for cropped NV21
+            int croppedSize = cropWidth * cropHeight * 3 / 2;
+            byte[] croppedNv21 = new byte[croppedSize];
+
+            int originalYSize = originalWidth * originalHeight;
+            int croppedYSize = cropWidth * cropHeight;
+
+            // ========================================
+            // Step 1: Crop Y plane
+            // ========================================
+            int croppedYOffset = 0;
+            for (int row = 0; row < cropHeight; row++) {
+                int originalRow = cropY + row;
+                int originalOffset = originalRow * originalWidth + cropX;
+                System.arraycopy(originalNv21, originalOffset, croppedNv21, croppedYOffset, cropWidth);
+                croppedYOffset += cropWidth;
+            }
+
+            // ========================================
+            // Step 2: Crop UV plane (interleaved VU)
+            // ========================================
+            int uvCropWidth = cropWidth / 2;
+            int uvCropHeight = cropHeight / 2;
+            int originalUvX = cropX / 2;
+            int originalUvY = cropY / 2;
+            int originalUvWidth = originalWidth / 2;
+
+            int croppedUvOffset = croppedYSize;
+            for (int row = 0; row < uvCropHeight; row++) {
+                int originalRow = originalUvY + row;
+                // Each UV pixel is 2 bytes (V, U interleaved)
+                int originalOffset = originalYSize + originalRow * originalUvWidth * 2 + originalUvX * 2;
+                System.arraycopy(originalNv21, originalOffset, croppedNv21, croppedUvOffset, uvCropWidth * 2);
+                croppedUvOffset += uvCropWidth * 2;
+            }
+
+            Log.d(TAG, String.format("Cropped NV21: %dx%d -> %dx%d (size: %d bytes)",
+                    originalWidth, originalHeight, cropWidth, cropHeight, croppedSize));
+
+            return croppedNv21;
+
+        } catch (Exception e) {
+            Log.e(TAG, "NV21 crop error", e);
             return null;
         }
     }

@@ -15,7 +15,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     private static final String TAG = "DatabaseHelper";
     private static final String DATABASE_NAME = "inspection.db";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 2;
 
     // Tables
     private static final String TABLE_WORK_ORDERS = "work_orders";
@@ -32,9 +32,15 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String COL_CAPTURE_ID = "id";
     private static final String COL_WO_FK = "work_order_id";
     private static final String COL_CELL_INDEX = "cell_index";
+    private static final String COL_CELL_ROW = "cell_row";
+    private static final String COL_CELL_COL = "cell_col";
     private static final String COL_IMAGE_PATH = "image_path";
     private static final String COL_QUALITY_STATUS = "quality_status";
     private static final String COL_CAPTURED_AT = "captured_at";
+    private static final String COL_CROP_X = "crop_x";
+    private static final String COL_CROP_Y = "crop_y";
+    private static final String COL_CROP_WIDTH = "crop_width";
+    private static final String COL_CROP_HEIGHT = "crop_height";
 
     public DatabaseHelper(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -55,8 +61,14 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 COL_CAPTURE_ID + " INTEGER PRIMARY KEY AUTOINCREMENT," +
                 COL_WO_FK + " TEXT," +
                 COL_CELL_INDEX + " INTEGER," +
+                COL_CELL_ROW + " INTEGER," +
+                COL_CELL_COL + " INTEGER," +
                 COL_IMAGE_PATH + " TEXT," +
                 COL_QUALITY_STATUS + " TEXT," +
+                COL_CROP_X + " INTEGER," +
+                COL_CROP_Y + " INTEGER," +
+                COL_CROP_WIDTH + " INTEGER," +
+                COL_CROP_HEIGHT + " INTEGER," +
                 COL_CAPTURED_AT + " DATETIME DEFAULT CURRENT_TIMESTAMP," +
                 "FOREIGN KEY(" + COL_WO_FK + ") REFERENCES " + TABLE_WORK_ORDERS + "(" + COL_WO_ID + "))";
 
@@ -89,13 +101,27 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         }
     }
 
-    // Save captured image data
-    public void saveCapturedImage(String workOrderId, int cellIndex,
-                                  String imagePath, String qualityStatus) {
+    // Save captured image data, including grid layout / crop coordinates
+    public void saveCapturedImage(String workOrderId,
+                                  int cellIndex,
+                                  int cellRow,
+                                  int cellCol,
+                                  int cropX,
+                                  int cropY,
+                                  int cropWidth,
+                                  int cropHeight,
+                                  String imagePath,
+                                  String qualityStatus) {
         SQLiteDatabase db = this.getWritableDatabase();
         ContentValues values = new ContentValues();
         values.put(COL_WO_FK, workOrderId);
         values.put(COL_CELL_INDEX, cellIndex);
+        values.put(COL_CELL_ROW, cellRow);
+        values.put(COL_CELL_COL, cellCol);
+        values.put(COL_CROP_X, cropX);
+        values.put(COL_CROP_Y, cropY);
+        values.put(COL_CROP_WIDTH, cropWidth);
+        values.put(COL_CROP_HEIGHT, cropHeight);
         values.put(COL_IMAGE_PATH, imagePath);
         values.put(COL_QUALITY_STATUS, qualityStatus);
 
@@ -121,6 +147,12 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 CaptureRecord record = new CaptureRecord();
                 record.id = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CAPTURE_ID));
                 record.cellIndex = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CELL_INDEX));
+                record.cellRow = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CELL_ROW));
+                record.cellCol = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CELL_COL));
+                record.cropX = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CROP_X));
+                record.cropY = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CROP_Y));
+                record.cropWidth = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CROP_WIDTH));
+                record.cropHeight = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CROP_HEIGHT));
                 record.imagePath = cursor.getString(cursor.getColumnIndexOrThrow(COL_IMAGE_PATH));
                 record.qualityStatus = cursor.getString(cursor.getColumnIndexOrThrow(COL_QUALITY_STATUS));
                 record.capturedAt = cursor.getString(cursor.getColumnIndexOrThrow(COL_CAPTURED_AT));
@@ -179,6 +211,12 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     public static class CaptureRecord {
         public int id;
         public int cellIndex;
+        public int cellRow;
+        public int cellCol;
+        public int cropX;
+        public int cropY;
+        public int cropWidth;
+        public int cropHeight;
         public String imagePath;
         public String qualityStatus;
         public String capturedAt;

@@ -36,6 +36,7 @@ android {
     }
 }
 
+
 dependencies {
     // ✅ AR Core
     implementation 'com.google.ar:core:1.41.0'

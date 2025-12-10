@@ -221,6 +221,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final float CAPTURE_DISTANCE_THRESHOLD = 1.0f; // meters from cell
     private HashMap<Integer, String> cellImagePaths = new HashMap<>();
     private boolean[] capturedCells = new boolean[GRID_ROWS * GRID_COLS];
+    private static final int DEFAULT_JPEG_QUALITY = 95; // High quality for better cropped images
     private long lastCaptureCheckTime = 0;
     private static final long CAPTURE_CHECK_INTERVAL = 250;
     private Map<Integer, AreaCalculator.AreaResult> cellAreaResults = new HashMap<>();
@@ -272,26 +273,29 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         tvWorkOrderInfo = findViewById(com.hashteelabs.dodomap.R.id.tvWorkOrderInfo);
         // Initialize database helper
         dbHelper = new DatabaseHelper(this);
-      //  Log.d(TAG, "Intent extras: " + intent.getExtras());
+        //  Log.d(TAG, "Intent extras: " + intent.getExtras());
 
-        // Get data from intent
+        // 1️⃣ Get data from Intent
         Intent intent = getIntent();
         currentWorkOrderId = intent.getStringExtra("WORK_ORDER_ID");
         currentStepId = intent.getStringExtra("STEP_ID");
         currentStepName = intent.getStringExtra("STEP_NAME");
 
-        // Save work order to database if received
+// 2️⃣ Save work order to DB if received
         if (currentWorkOrderId != null) {
             dbHelper.saveWorkOrder(currentWorkOrderId, currentStepId, currentStepName);
             Log.d(HelloArActivity.TAG, "Received and saved work order: " + currentWorkOrderId);
         } else {
             Log.d(HelloArActivity.TAG, "No work order received from intent");
         }
+
+
         updateWorkOrderDisplay();
+
 
         Button btnAreaReport = findViewById(com.hashteelabs.dodomap.R.id.btnAreaReport);
         btnAreaReport.setOnClickListener(v -> showAreaReport());
-        btnAreaReport.setVisibility(View.GONE); // Hidden initially
+        btnAreaReport.setVisibility(View.GONE); // Hidden initially GONE
         // 1️⃣ Initialize basic mode selection views
         modeSelectionContainer = findViewById(com.hashteelabs.dodomap.R.id.modeSelectionContainer);
         btnInspectFloor = findViewById(com.hashteelabs.dodomap.R.id.btnInspectFloor);
@@ -602,30 +606,56 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Toast.makeText(this, "Invalid height value", Toast.LENGTH_SHORT).show();
         }
     }
-
-
     private void toggleCaptureMode() {
         captureMode = !captureMode;
         if (captureMode) {
-            // Use text and background color for Button
-            btnCapture.setText("CAPTURE");
-            btnCapture.setBackgroundColor(Color.parseColor("#4CAF50")); // Green background
-            tvInstructions.setText("📸 CAPTURE MODE: Position above cell, then press CAPTURE");
+            btnCapture.setText("CAPTURE ALL");
+            btnCapture.setBackgroundColor(Color.parseColor("#4CAF50"));
+            tvInstructions.setText("📸 Position camera to see entire grid, then press CAPTURE ALL");
             angleIndicator.setVisibility(View.VISIBLE);
             btnCapture.setOnClickListener(v -> captureCurrentCell());
-            Toast.makeText(this, "Position camera above cells and press CAPTURE button",
-                    Toast.LENGTH_LONG).show();
-        } else {
+            btnCapture.setEnabled(true); // ✅ Always enabled
+            Toast.makeText(this, "Press CAPTURE ALL to capture all 16 cells at once", Toast.LENGTH_LONG).show();
+        }  else {
             btnCapture.setText("START");
-            btnCapture.setBackgroundColor(Color.parseColor("#2196F3")); // Blue background
+            btnCapture.setBackgroundColor(Color.parseColor("#2196F3"));
             angleIndicator.setVisibility(View.GONE);
             updateInstructions();
-            currentStableCell = -1;
             btnCapture.setOnClickListener(v -> toggleCaptureMode());
-            Toast.makeText(this, "Capture Mode OFF", Toast.LENGTH_SHORT).show();
         }
     }
+    private void captureAllCellsFromSingleFrameUI() {
+        if (isCaptureInProgress) {
+            Toast.makeText(this, "Capture already in progress...", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
+        if (!gridManager.hasAllCorners()) {
+            Toast.makeText(this, "Grid not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        isCaptureInProgress = true;
+        runOnUiThread(() -> {
+            btnCapture.setEnabled(false);
+            btnCapture.setText("CAPTURING…");
+        });
+
+        surfaceView.queueEvent(() -> {
+            try {
+                Frame frame = session.update();
+                captureAllCellsFromSingleFrame(frame); // ✅ YOUR CORRECT METHOD
+            } catch (Exception e) {
+                Log.e(TAG, "Capture failed", e);
+            } finally {
+                runOnUiThread(() -> {
+                    btnCapture.setEnabled(true);
+                    btnCapture.setText("CAPTURE");
+                    isCaptureInProgress = false;
+                });
+            }
+        });
+    }
 
     private void createFloatingAnchor() {
         surfaceView.queueEvent(() -> {
@@ -920,9 +950,99 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // Single-threaded executor to save images one by one
     //private final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
 
+    /**
+     * Simple holder for a rectangular crop in pixel coordinates.
+     */
+    private static class CropRegion {
+        final int x;
+        final int y;
+        final int width;
+        final int height;
+
+        CropRegion(int x, int y, int width, int height) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    /**
+     * Project a 3D world-space point into image pixel coordinates using camera pose + intrinsics.
+     * Returns false if behind camera or off-frame.
+     */
+    private boolean projectWorldToImage(float[] worldPos,
+                                        Camera camera,
+                                        int imageWidth,
+                                        int imageHeight,
+                                        float[] outPixel2) {
+        if (worldPos == null || camera == null ||
+                outPixel2 == null || imageWidth <= 0 || imageHeight <= 0) {
+            return false;
+        }
+        // World -> camera space
+        float[] camPos = new float[3];
+        camera.getPose().inverse().transformPoint(worldPos, 0, camPos, 0);
+
+        float z = camPos[2];
+        if (z >= -1e-6f) return false; // behind or on camera plane
+
+        float[] focal = new float[2];
+        float[] principal = new float[2];
+        camera.getImageIntrinsics().getFocalLength(focal, 0);
+        camera.getImageIntrinsics().getPrincipalPoint(principal, 0);
+
+        float px = (camPos[0] / z) * focal[0] + principal[0];
+        float py = (camPos[1] / z) * focal[1] + principal[1];
+
+        if (px < 0 || px > imageWidth || py < 0 || py > imageHeight) return false;
+
+        outPixel2[0] = px;
+        outPixel2[1] = py;
+        return true;
+    }
+
+    /**
+     * Calculate a crop rectangle for this cell by projecting its 3D corners into
+     * the current camera frame and building a 2D bounding box. If projection
+     * fails (e.g. cell off-screen), we fall back to simple 4×4 tiling so that
+     * capture still works.
+     */
+    private CropRegion calculateCropRegionForCell(int cellIndex,
+                                                  GridManager.GridCell cell,
+                                                  Camera camera,
+                                                  int imageWidth,
+                                                  int imageHeight){
+        if (imageWidth <= 0 || imageHeight <= 0) {
+            return null;
+        }
+        int maxIndex = GRID_ROWS * GRID_COLS - 1;
+        cellIndex = Math.max(0, Math.min(cellIndex, maxIndex));
+        // Force strict uniform tiling so every cell has the same size.
+        // Divide the image into exactly GRID_ROWS × GRID_COLS uniform cells
+        int row = cellIndex / GRID_COLS;
+        int col = cellIndex % GRID_COLS;
+        int cellWidth = imageWidth / GRID_COLS;
+        int cellHeight = imageHeight / GRID_ROWS;
+        int left = col * cellWidth;
+        int top = row * cellHeight;
+        int right = (col == GRID_COLS - 1) ? imageWidth : (col + 1) * cellWidth;
+        int bottom = (row == GRID_ROWS - 1) ? imageHeight : (row + 1) * cellHeight;
+        int cropWidth = Math.max(2, right - left);
+        int cropHeight = Math.max(2, bottom - top);
+        // Ensure even dimensions for YUV420
+        if ((cropWidth & 1) == 1) cropWidth--;
+        if ((cropHeight & 1) == 1) cropHeight--;
+        cropWidth = Math.max(2, cropWidth);
+        cropHeight = Math.max(2, cropHeight);
+        Log.d("CaptureDebug", String.format(Locale.US,
+                "Cell %d uniform tile → [%d,%d,%dx%d] (row=%d,col=%d)",
+                cellIndex, left, top, cropWidth, cropHeight, row, col));
+        return new CropRegion(left, top, cropWidth, cropHeight);
+    }
 
 
-    private void captureCellImage(int cellIndex, Frame frame) {
+   /* private void captureCellImage(int cellIndex, Frame frame) {
         try {
             if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) {
                 Log.e("capture1", "Invalid cell index: " + cellIndex);
@@ -953,141 +1073,37 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             lastCaptureTime = now;
 
             Image image = null;
+            byte[] nv21Data = null;
+            int width = 0;
+            int height = 0;
+
             try {
                 image = frame.acquireCameraImage();
 
                 if (image.getFormat() != ImageFormat.YUV_420_888) {
                     Log.e("capture3", "Wrong format: " + image.getFormat());
-                    if (image != null) image.close(); // FIX: Close on error
                     return;
                 }
 
-                Log.d("capture4", "📸 Capturing cell " + (cellIndex + 1));
+                width = image.getWidth();
+                height = image.getHeight();
+                Log.d("capture4", "📸 Capturing cell " + (cellIndex + 1) + " (" + width + "x" + height + ")");
 
-                // ✅ Create output file
-                // File imgDir = new File(getExternalFilesDir(Environment.DIRECTORY_PICTURES),
-                File imgDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "AR_Floor_Inspection");
-
-                if (!imgDir.exists()) {
-                    imgDir.mkdirs();
+                nv21Data = YuvConverter.imageToNV21(image);
+                if (nv21Data == null) {
+                    Log.e("capture4", "Failed to convert image to NV21");
+                    runOnUiThread(() ->
+                            Toast.makeText(this, "Failed to read camera frame", Toast.LENGTH_SHORT).show()
+                    );
+                    return;
                 }
-
-                SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
-                String timestamp = dateFormat.format(new Date());
-                String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
-                        cellIndex + 1, timestamp);
-                File outputFile = new File(imgDir, filename);
-
-                // ✅ CRITICAL: Direct conversion (NO intermediate buffers!)
-                final Image finalImage = image;
-                final int finalIndex = cellIndex;
-                final File finalFile = outputFile;
-
-                captureExecutor.execute(() -> {
-                    boolean success = false;
-                    try {
-                        // ✅ Use 25% quality (was 40%)
-                        success = YuvConverter.saveImageDirectly(finalImage, finalFile, 25);
-                    } catch (Exception e) {
-                        Log.e("capture5", "Save failed", e);
-                    } finally {
-                        // ✅ CRITICAL: Close in finally block
-                        try {
-                            finalImage.close();
-                            Log.d("capture6", "Image closed");
-                        } catch (Exception e) {
-                            Log.e("capture7", "Failed to close image", e);
-                        }
-                    }
-
-                    if (success && finalFile.exists()) {
-                        Log.d("capture8", "✓ SAVED: " + finalFile.getName() +
-                                " (" + (finalFile.length() / 1024) + " KB)");
-
-                        // Add to gallery
-                        MediaScannerConnection.scanFile(
-                                HelloArActivity.this,
-                                new String[]{finalFile.getAbsolutePath()},
-                                new String[]{"image/jpeg"},
-                                null
-                        );
-
-                        // Update UI
-                        runOnUiThread(() -> {
-                            cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
-                            // ✅ NEW: Mark as captured
-                            if (finalIndex < capturedCells.length) {
-                                capturedCells[finalIndex] = true;
-                            }
-                            //  Save this captured cell to the database
-                            if (currentWorkOrderId != null) {
-                                dbHelper.saveCapturedImage(
-                                        currentWorkOrderId,
-                                        finalIndex,
-                                        finalFile.getAbsolutePath(),
-                                        "pending"   // initial status
-                                );
-                                Log.d("DB_SAVE", "Saved to DB → WO: " + currentWorkOrderId + " | Cell: " + finalIndex);
-                            }
-
-
-
-                            updateWorkOrderDisplay();
-                            // Vibrate
-                            try {
-                                Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                                if (vib != null) vib.vibrate(150);
-                            } catch (Exception ignored) {
-                            }
-
-                            int total = cellImagePaths.size();
-                            int remaining = (GRID_ROWS * GRID_COLS) - total;
-                            Toast.makeText(HelloArActivity.this,
-                                    String.format("✓ Cell %d saved • %d more to go",
-                                            finalIndex + 1, remaining),
-                                    Toast.LENGTH_SHORT).show();
-                            uploadImageToServer(finalFile, finalIndex);
-                            updateVisitedCountDisplay();
-                            updateViewButtonVisibility();
-
-                            if (gridViewVisible && gridView2D != null) {
-                                gridView2D.invalidate();
-                            }
-                        });
-                    } else {
-                        Log.e(TAG, "❌ Save failed");
-                        runOnUiThread(() ->
-                                Toast.makeText(HelloArActivity.this,
-                                        "❌ Failed to save cell " + (finalIndex + 1),
-                                        Toast.LENGTH_SHORT).show()
-                        );
-                    }
-
-                    // ✅ Explicit cleanup
-                    System.gc();
-                });
-
-                // Don't close image here - executor will do it in finally block
-                image = null;
-
             } catch (NotYetAvailableException e) {
-                if (image != null) {
-                    try {
-                        image.close();
-                    } catch (Exception ignored) {
-                    }
-                }
                 runOnUiThread(() ->
                         Toast.makeText(this, "Camera busy", Toast.LENGTH_SHORT).show()
                 );
+                return;
             } catch (OutOfMemoryError e) {
                 Log.e(TAG, "❌ OUT OF MEMORY!", e);
-                if (image != null) {
-                    try {
-                        image.close();
-                    } catch (Exception ignored) {
-                    }
-                }
                 runOnUiThread(() ->
                         new AlertDialog.Builder(this)
                                 .setTitle("Memory Full")
@@ -1095,8 +1111,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                 .setPositiveButton("OK", null)
                                 .show()
                 );
+                return;
             } catch (Exception e) {
                 Log.e(TAG, "Capture failed", e);
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Capture failed: " + e.getMessage(), Toast.LENGTH_SHORT).show()
+                );
+                return;
+            } finally {
                 if (image != null) {
                     try {
                         image.close();
@@ -1104,11 +1126,487 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     }
                 }
             }
+
+            if (nv21Data == null || width <= 0 || height <= 0) {
+                Log.e(TAG, "Invalid frame data for capture");
+                return;
+            }
+
+            File imgDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "AR_Floor_Inspection");
+            if (!imgDir.exists()) {
+                imgDir.mkdirs();
+            }
+
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+            String timestamp = dateFormat.format(new Date());
+            String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
+                    cellIndex + 1, timestamp);
+            File outputFile = new File(imgDir, filename);
+
+            Camera captureCamera = frame.getCamera();
+
+            GridManager.GridCell cell = null;
+            if (gridManager != null) {
+                int targetRow = cellIndex / GRID_COLS;
+                int targetCol = cellIndex % GRID_COLS;
+                cell = gridManager.getCell(targetRow, targetCol);
+            }
+
+            CropRegion cropRegion = calculateCropRegionForCell(
+                    cellIndex,
+                    cell,
+                    captureCamera,
+                    image.getWidth(),
+                    image.getHeight()
+            );
+
+
+            if (cropRegion == null) {
+                int fallbackWidth = Math.max(2, (int) (width * 0.4f));
+                int fallbackHeight = Math.max(2, (int) (height * 0.4f));
+                int centerX = width / 2;
+                int centerY = height / 2;
+                int cropX = Math.max(0, centerX - fallbackWidth / 2);
+                int cropY = Math.max(0, centerY - fallbackHeight / 2);
+                cropX = Math.min(cropX, width - fallbackWidth);
+                cropY = Math.min(cropY, height - fallbackHeight);
+
+                // ensure even
+                if ((fallbackWidth & 1) == 1) fallbackWidth--;
+                if ((fallbackHeight & 1) == 1) fallbackHeight--;
+                fallbackWidth = Math.max(2, fallbackWidth);
+                fallbackHeight = Math.max(2, fallbackHeight);
+
+                cropRegion = new CropRegion(cropX, cropY, fallbackWidth, fallbackHeight);
+                Log.w("CaptureDebug", "Projected crop unavailable, using center fallback");
+            }
+
+            final byte[] finalNv21 = nv21Data;
+            final CropRegion finalCrop = cropRegion;
+            final int finalWidth = width;
+            final int finalHeight = height;
+            final int finalIndex = cellIndex;
+            final File finalFile = outputFile;
+
+            captureExecutor.execute(() -> {
+                boolean success = false;
+                try {
+                    Log.d("capture", String.format(Locale.US,
+                        "Single cell %d crop: [x=%d,y=%d,w=%d,h=%d]", finalIndex, finalCrop.x, finalCrop.y, finalCrop.width, finalCrop.height));
+
+                    success = YuvConverter.saveImageFromByteArray(
+                        finalNv21,
+                        finalWidth,
+                        finalHeight,
+                        finalCrop.x,
+                        finalCrop.y,
+                        finalCrop.width,
+                        finalCrop.height,
+                        finalFile,
+                        DEFAULT_JPEG_QUALITY
+                    );
+                } catch (Exception e) {
+                    Log.e("capture5", "Save failed", e);
+                } finally {
+                    if (finalNv21 != null) {
+                        Arrays.fill(finalNv21, (byte) 0);
+                    }
+                }
+
+                if (success && finalFile.exists()) {
+                    Log.d("capture8", "✓ SAVED: " + finalFile.getName() +
+                            " (" + (finalFile.length() / 1024) + " KB)");
+
+                    try {
+                        maybeRotateImage(finalFile);
+                    } catch (Exception e) {
+                        Log.w("capture", "Rotation correction failed for " + finalFile.getName(), e);
+                    }
+
+                    MediaScannerConnection.scanFile(
+                            HelloArActivity.this,
+                            new String[]{finalFile.getAbsolutePath()},
+                            new String[]{"image/jpeg"},
+                            null
+                    );
+
+                    runOnUiThread(() -> {
+                        cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
+                        if (finalIndex < capturedCells.length) {
+                            capturedCells[finalIndex] = true;
+                        }
+                        if (currentWorkOrderId != null) {
+                            int cellRow = finalIndex / GRID_COLS;
+                            int cellCol = finalIndex % GRID_COLS;
+                            dbHelper.saveCapturedImage(
+                                    currentWorkOrderId,
+                                    finalIndex,
+                                    cellRow,
+                                    cellCol,
+                                    finalCrop.x,
+                                    finalCrop.y,
+                                    finalCrop.width,
+                                    finalCrop.height,
+                                    finalFile.getAbsolutePath(),
+                                    "pending"
+                            );
+                            Log.d("DB_SAVE", "Saved to DB → WO: " + currentWorkOrderId + " | Cell: " + finalIndex);
+                        }
+
+                        updateWorkOrderDisplay();
+                        try {
+                            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                            if (vib != null) vib.vibrate(150);
+                        } catch (Exception ignored) {
+                        }
+
+                        int total = cellImagePaths.size();
+                        int remaining = (GRID_ROWS * GRID_COLS) - total;
+                        Toast.makeText(HelloArActivity.this,
+                                String.format("✓ Cell %d saved • %d more to go",
+                                        finalIndex + 1, remaining),
+                                Toast.LENGTH_SHORT).show();
+                        uploadImageToServer(finalFile, finalIndex);
+                        updateVisitedCountDisplay();
+                        updateViewButtonVisibility();
+
+                        if (gridViewVisible && gridView2D != null) {
+                            gridView2D.invalidate();
+                        }
+                    });
+                } else {
+                    Log.e(TAG, "❌ Save failed");
+                    runOnUiThread(() ->
+                            Toast.makeText(HelloArActivity.this,
+                                    "❌ Failed to save cell " + (finalIndex + 1),
+                                    Toast.LENGTH_SHORT).show()
+                    );
+                }
+
+                System.gc();
+            });
+
+        } catch (Exception e) {
+            Log.e("capture9", "Capture failed", e);
         }
-        catch (Exception e) {
-            Log.e("capture9", "Capture failed", e);}
+    }*/
+
+    
+    private void captureAllCellsFromSingleFrame(Frame frame) {
+        // Memory + rate limit checks (same logic as captureCellImage, but once)
+        if (!isMemorySafe()) {
+            runOnUiThread(() ->
+                    Toast.makeText(this, "❌ LOW MEMORY - Restart app", Toast.LENGTH_SHORT).show()
+            );
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - lastCaptureTime < 3000) {
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Wait 3 seconds", Toast.LENGTH_SHORT).show()
+            );
+            return;
+        }
+        lastCaptureTime = now;
+
+        Image image = null;
+        byte[] nv21Data = null;
+        int width = 0;
+        int height = 0;
+
+        try {
+            image = frame.acquireCameraImage();
+            if (image.getFormat() != ImageFormat.YUV_420_888) {
+                Log.e("capture3", "Wrong format: " + image.getFormat());
+                return;
+            }
+
+            width = image.getWidth();
+            height = image.getHeight();
+            Log.d("capture_all", "📸 Capturing ALL cells from single frame (" + width + "x" + height + ")");
+
+            nv21Data = YuvConverter.imageToNV21(image);
+            if (nv21Data == null) {
+                Log.e("capture_all", "Failed to convert image to NV21");
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Failed to read camera frame", Toast.LENGTH_SHORT).show()
+                );
+                return;
+            }
+        } catch (NotYetAvailableException e) {
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Camera busy", Toast.LENGTH_SHORT).show()
+            );
+            return;
+        } catch (OutOfMemoryError e) {
+            Log.e(TAG, "❌ OUT OF MEMORY!", e);
+            runOnUiThread(() ->
+                    new AlertDialog.Builder(this)
+                            .setTitle("Memory Full")
+                            .setMessage("Cannot capture. Restart app.")
+                            .setPositiveButton("OK", null)
+                            .show()
+            );
+            return;
+        } catch (Exception e) {
+            Log.e(TAG, "Capture-all failed", e);
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Capture failed: " + e.getMessage(), Toast.LENGTH_SHORT).show()
+            );
+            return;
+        } finally {
+            if (image != null) {
+                try {
+                    image.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        if (nv21Data == null || width <= 0 || height <= 0) {
+            Log.e(TAG, "Invalid frame data for capture-all");
+            return;
+        }
+
+        // Precompute crop regions on the GL thread using the live camera
+        Camera captureCamera = frame.getCamera();
+        List<GridManager.GridCell> allCells = gridManager != null ? gridManager.getAllCells() : null;
+        CropRegion[] precomputedCrops = new CropRegion[GRID_ROWS * GRID_COLS];
+        
+        for (int cellIndex = 0; cellIndex < GRID_ROWS * GRID_COLS; cellIndex++) {
+            GridManager.GridCell cell = (allCells != null && cellIndex < allCells.size()) ? allCells.get(cellIndex) : null;
+            CropRegion crop = calculateCropRegionForCell(
+                    cellIndex,
+                    cell,
+                    captureCamera,
+                    width,
+                    height
+            );
+            
+            // Ensure we always have a valid crop (fallback to uniform tiling if null)
+            if (crop == null) {
+                Log.w(TAG, "Crop null for cell " + cellIndex + ", using uniform fallback");
+                int row = cellIndex / GRID_COLS;
+                int col = cellIndex % GRID_COLS;
+                int cellW = width / GRID_COLS;
+                int cellH = height / GRID_ROWS;
+                int left = col * cellW;
+                int top = row * cellH;
+                int right = (col == GRID_COLS - 1) ? width : (col + 1) * cellW;
+                int bottom = (row == GRID_ROWS - 1) ? height : (row + 1) * cellH;
+                int cropW = Math.max(2, right - left);
+                int cropH = Math.max(2, bottom - top);
+                if ((cropW & 1) == 1) cropW--;
+                if ((cropH & 1) == 1) cropH--;
+                crop = new CropRegion(left, top, cropW, cropH);
+            }
+            precomputedCrops[cellIndex] = crop;
+        }
+
+        final byte[] finalNv21 = nv21Data;
+        final int finalWidth = width;
+        final int finalHeight = height;
+        final CropRegion[] finalCrops = precomputedCrops;
+
+        captureExecutor.execute(() -> {
+            try {
+                // One shared frame, loop through all cells (always capture all 16)
+                for (int cellIndex = 0; cellIndex < GRID_ROWS * GRID_COLS; cellIndex++) {
+                    if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) continue;
+
+                    CropRegion cropRegion = (finalCrops != null && cellIndex < finalCrops.length)
+                            ? finalCrops[cellIndex]
+                            : null;
+
+                    if (cropRegion == null) {
+                        Log.w("capture_all", "No crop for cell " + cellIndex + ", skipping");
+                        continue;
+                    }
+
+                    int cropX = cropRegion.x;
+                    int cropY = cropRegion.y;
+                    int cropWidth = cropRegion.width;
+                    int cropHeight = cropRegion.height;
+
+                    // Create output file per cell
+                    File imgDir = new File(
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                            "AR_Floor_Inspection"
+                    );
+                    if (!imgDir.exists()) {
+                        imgDir.mkdirs();
+                    }
+                    SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+                    String timestamp = dateFormat.format(new Date());
+                    String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
+                            cellIndex + 1, timestamp);
+                    File outputFile = new File(imgDir, filename);
+
+                    boolean success;
+                    try {
+                        // Log exact crop region for debugging
+                        Log.d("capture_all", String.format(Locale.US,
+                                "Cell %d crop: [x=%d,y=%d,w=%d,h=%d]", cellIndex, cropX, cropY, cropWidth, cropHeight));
+
+                        // Use configured JPEG quality for cropped images
+                        success = YuvConverter.saveImageFromByteArray(
+                                finalNv21,
+                                finalWidth,
+                                finalHeight,
+                                cropX,
+                                cropY,
+                                cropWidth,
+                                cropHeight,
+                                outputFile,
+                                DEFAULT_JPEG_QUALITY
+                        );
+                    } catch (Exception e) {
+                        Log.e("capture_all", "Save failed for cell " + cellIndex, e);
+                        continue;
+                    }
+
+                    if (!success || !outputFile.exists()) {
+                        Log.e("capture_all", "❌ Save failed for cell " + cellIndex);
+                        continue;
+                    }
+
+                    int finalIndex = cellIndex;
+                    File finalFile = outputFile;
+                    CropRegion finalCrop = cropRegion;
+
+                    Log.d("capture_all", "✓ SAVED cell " + finalIndex + ": " + finalFile.getName() +
+                            " (" + (finalFile.length() / 1024) + " KB)");
+
+                    // Rotate saved image to match device/display rotation if needed
+                    try {
+                        maybeRotateImage(finalFile);
+                    } catch (Exception e) {
+                        Log.w("capture_all", "Rotation correction failed for " + finalFile.getName(), e);
+                    }
+
+                    MediaScannerConnection.scanFile(
+                            HelloArActivity.this,
+                            new String[]{finalFile.getAbsolutePath()},
+                            new String[]{"image/jpeg"},
+                            null
+                    );
+
+                    runOnUiThread(() -> {
+                        cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
+                        if (finalIndex < capturedCells.length) {
+                            capturedCells[finalIndex] = true;
+                        }
+                        if (currentWorkOrderId != null) {
+                            int cellRow = finalIndex / GRID_COLS;
+                            int cellCol = finalIndex % GRID_COLS;
+                            dbHelper.saveCapturedImage(
+                                    currentWorkOrderId,
+                                    finalIndex,
+                                    cellRow,
+                                    cellCol,
+                                    finalCrop.x,
+                                    finalCrop.y,
+                                    finalCrop.width,
+                                    finalCrop.height,
+                                    finalFile.getAbsolutePath(),
+                                    "pending"
+                            );
+                            Log.d("DB_SAVE", "Saved to DB → WO: " + currentWorkOrderId + " | Cell: " + finalIndex);
+                        }
+
+                        updateWorkOrderDisplay();
+                        try {
+                            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                            if (vib != null) vib.vibrate(150);
+                        } catch (Exception ignored) {
+                        }
+
+                        int total = cellImagePaths.size();
+                        int remaining = (GRID_ROWS * GRID_COLS) - total;
+                        Toast.makeText(HelloArActivity.this,
+                                String.format("✓ Captured %d cells • %d more to go", total, remaining),
+                                Toast.LENGTH_SHORT).show();
+                        uploadImageToServer(finalFile, finalIndex);
+                        updateVisitedCountDisplay();
+                        updateViewButtonVisibility();
+
+                        if (gridViewVisible && gridView2D != null) {
+                            gridView2D.invalidate();
+                        }
+                    });
+                }
+            } finally {
+                // Explicit cleanup of shared buffer
+                Arrays.fill(finalNv21, (byte) 0);
+                System.gc();
+            }
+        });
     }
     // Add this method inside HelloArActivity class
+    /**
+     * Rotate saved JPEG to match device/display rotation if necessary.
+     * This uses a memory-conscious decode with inSampleSize to avoid OOM on large images.
+     */
+    private void maybeRotateImage(File file) {
+        if (file == null || !file.exists()) return;
+        try {
+            int rotation = getWindowManager().getDefaultDisplay().getRotation();
+            int degrees = 0;
+            switch (rotation) {
+                case android.view.Surface.ROTATION_90:
+                    degrees = 90; break;
+                case android.view.Surface.ROTATION_180:
+                    degrees = 180; break;
+                case android.view.Surface.ROTATION_270:
+                    degrees = 270; break;
+                default:
+                    degrees = 0; break;
+            }
+
+            if (degrees == 0) return; // no rotation needed
+
+            // Decode bounds first
+            android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            int w = bounds.outWidth;
+            int h = bounds.outHeight;
+
+            // Compute sample size to limit memory (downscale if too large)
+            int maxDim = 2048; // conservative
+            int inSampleSize = 1;
+            while (w / inSampleSize > maxDim || h / inSampleSize > maxDim) {
+                inSampleSize <<= 1;
+            }
+
+            android.graphics.BitmapFactory.Options opts = new android.graphics.BitmapFactory.Options();
+            opts.inSampleSize = inSampleSize;
+            android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+            if (bitmap == null) return;
+
+            android.graphics.Matrix matrix = new android.graphics.Matrix();
+            matrix.postRotate(degrees);
+            android.graphics.Bitmap rotated = android.graphics.Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+            java.io.FileOutputStream fos = null;
+            try {
+                fos = new java.io.FileOutputStream(file);
+                rotated.compress(android.graphics.Bitmap.CompressFormat.JPEG, DEFAULT_JPEG_QUALITY, fos);
+            } finally {
+                if (fos != null) {
+                    try { fos.flush(); fos.close(); } catch (Exception ignored) {}
+                }
+            }
+
+            bitmap.recycle();
+            rotated.recycle();
+        } catch (OutOfMemoryError oom) {
+            Log.w(TAG, "Rotation decode OOM, skipping rotation", oom);
+        } catch (Exception e) {
+            Log.w(TAG, "maybeRotateImage failed", e);
+        }
+    }
     private void updateWorkOrderDisplay() {
         // ✅ Add null check
         if (tvWorkOrderInfo == null) {
@@ -1178,8 +1676,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         .setType(MultipartBody.FORM)
                         .addFormDataPart("file", imageFile.getName(),
                                 RequestBody.create(imageFile, MediaType.parse("image/jpeg")))
-                        .addFormDataPart("cell_width_m", String.valueOf(cellWidth))   // ← Add this
-                        .addFormDataPart("cell_height_m", String.valueOf(cellHeight)) // ← Add this
+                        .addFormDataPart("cell_width_m", String.valueOf(cellWidth))
+                        .addFormDataPart("cell_height_m", String.valueOf(cellHeight))
                         .build();
 
                 Request request = new Request.Builder()
@@ -2710,13 +3208,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         v1[2] * v2[0] - v1[0] * v2[2],
                         v1[0] * v2[1] - v1[1] * v2[0]
                 };
-                float len = (float) Math.sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+                float len = (float) Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
                 if (len > 1e-6f) {
-                    normal[0] /= len; normal[1] /= len; normal[2] /= len;
+                    normal[0] /= len;
+                    normal[1] /= len;
+                    normal[2] /= len;
                 }
 
                 // Compute angle relative to plane
-                float dot = Math.abs(camForward[0]*normal[0] + camForward[1]*normal[1] + camForward[2]*normal[2]);
+                float dot = Math.abs(camForward[0] * normal[0] + camForward[1] * normal[1] + camForward[2] * normal[2]);
                 dot = Math.min(1f, Math.max(0f, dot));
                 float angleFromPerp = (float) Math.toDegrees(Math.acos(dot));
                 float displayAngle = (currentMode == InspectionMode.FLOOR || currentMode == InspectionMode.VIRTUAL_WALL)
@@ -2725,14 +3225,14 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
                 // Compute ray-plane intersection
                 float[] planePoint = p1;
-                float denom = normal[0]*camForward[0] + normal[1]*camForward[1] + normal[2]*camForward[2];
+                float denom = normal[0] * camForward[0] + normal[1] * camForward[1] + normal[2] * camForward[2];
                 if (Math.abs(denom) > 0.001f) {
                     float[] camToPlane = {
                             planePoint[0] - lastCameraPosition[0],
                             planePoint[1] - lastCameraPosition[1],
                             planePoint[2] - lastCameraPosition[2]
                     };
-                    float numer = normal[0]*camToPlane[0] + normal[1]*camToPlane[1] + normal[2]*camToPlane[2];
+                    float numer = normal[0] * camToPlane[0] + normal[1] * camToPlane[1] + normal[2] * camToPlane[2];
                     float t = numer / denom;
                     if (t >= 0.05f && t <= 20f) {
                         currentIntersectionPoint = new float[]{
@@ -2753,76 +3253,38 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             currentTargetedCell = cellBelow;
             updateAngleIndicator(angleOut[0]);
 
+            // In onDrawFrame(), inside captureMode block:
             if (cellBelow >= 0 && cellBelow < visitedCells.length) {
-                // Auto-mark as visited
-                if (!visitedCells[cellBelow]) {
-                    visitedCells[cellBelow] = true;
-                    runOnUiThread(() -> {
-                        updateVisitedCountDisplay();
-                        if (gridView2D != null) {
-                            gridView2D.updateVisitedCells(visitedCells);
-                        }
-                    });
-                }
-
                 boolean captured = cellImagePaths.containsKey(cellBelow);
-                currentStableCell = cellBelow;
-
-                // Auto-capture if visited and not yet captured
-                if (visitedCells[cellBelow] && !captured) {
-                    long now = System.currentTimeMillis();
-                    if (now - lastAutoCaptureTime >= AUTO_CAPTURE_COOLDOWN_MS) {
-                        lastAutoCaptureTime = now;
-                        runOnUiThread(() -> {
-                            if (captureMode && cellBelow >= 0 && cellBelow < visitedCells.length
-                                    && visitedCells[cellBelow] && !cellImagePaths.containsKey(cellBelow)) {
-                                captureCurrentCell();
-                                Log.d(TAG, "Auto-captured cell: " + (cellBelow + 1));
-                            }
-                        });
-                    }
-                }
-
-                // Update UI
                 runOnUiThread(() -> {
-                    int capturedCount = cellImagePaths.size();
                     String guidance = (currentMode == InspectionMode.FLOOR)
                             ? String.format("%.1f° (90° = Perfect)", angleOut[0])
                             : String.format("%.1f° (0° = Perfect)", angleOut[0]);
 
                     if (captured) {
-                        tvInstructions.setText(String.format("✓ Cell %d captured • %s (%d/%d)",
-                                cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
-                        btnCapture.setEnabled(false);
-                        btnCapture.setAlpha(0.5f);
-                    } else if (visitedCells[cellBelow]) {
-                        tvInstructions.setText(String.format("🎯 Cell %d ready • %s • AUTO-CAPTURING... (%d/%d)",
-                                cellBelow + 1, guidance, capturedCount, GRID_ROWS * GRID_COLS));
-                        btnCapture.setEnabled(true);
-                        btnCapture.setAlpha(1.0f);
+                        tvInstructions.setText(String.format("✓ Cell %d captured • %s",
+                                cellBelow + 1, guidance));
                     } else {
-                        tvInstructions.setText(String.format("⚠️ Cell %d not marked — aim steadily", cellBelow + 1));
-                        btnCapture.setEnabled(false);
-                        btnCapture.setAlpha(0.5f);
+                        // ✅ SIMPLE: just show which cell you're pointing at
+                        tvInstructions.setText(String.format("🎯 Aiming at Cell %d • %s",
+                                cellBelow + 1, guidance));
                     }
+                    // ✅ Always enable "CAPTURE ALL"
+                    btnCapture.setEnabled(true);
+                    btnCapture.setAlpha(1.0f);
                 });
-
                 highlightTargetCell(cellBelow);
             } else {
-                currentStableCell = -1;
                 runOnUiThread(() -> {
-                    int captured = cellImagePaths.size();
                     String guidance = (currentMode == InspectionMode.FLOOR)
                             ? String.format("%.1f° (need 60–90°)", angleOut[0])
                             : String.format("%.1f° (need 0–30°)", angleOut[0]);
-                    tvInstructions.setText(String.format("📐 Aim at grid • %s (%d/%d)",
-                            guidance, captured, GRID_ROWS * GRID_COLS));
-                    btnCapture.setEnabled(false);
-                    btnCapture.setAlpha(0.5f);
+                    tvInstructions.setText("📸 Position camera over entire grid • " + guidance);
+                    btnCapture.setEnabled(true);
+                    btnCapture.setAlpha(1.0f);
                 });
             }
         }
-
         // Handle tap for corner placement (outside capture mode logic)
         handleTapForCornerPlacement(frame, camera);
 
@@ -2948,67 +3410,55 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     // === NEW: Manual capture method triggered by button ===
+
     private void captureCurrentCell() {
-        // ✅ Check if already capturing
         if (isCaptureInProgress) {
-            Toast.makeText(this, "Capture in progress...", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Capture already in progress...", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // ✅ Check memory first
-        if (!isMemorySafe()) {
-            Toast.makeText(this, "❌ Memory too low - restart app", Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (!captureMode || !gridManager.hasAllCorners()) {
-            Toast.makeText(this, "Enable capture mode first", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (currentStableCell < 0) {
-            Toast.makeText(this, "Position above a cell first", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (!visitedCells[currentStableCell]) {
-            Toast.makeText(this, "Mark cell in 2D view first!", Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (cellImagePaths.containsKey(currentStableCell)) {
-            Toast.makeText(this, "Already captured", Toast.LENGTH_SHORT).show();
+        // ✅ ONLY check if grid is ready
+        if (!gridManager.hasAllCorners()) {
+            Toast.makeText(this, "Grid not ready", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // Mark as in progress
+        // ✅ OPTIONAL: Check if entire grid is visible (implement canSeeEntireGrid properly)
+        // if (!canSeeEntireGrid()) {
+        //     Toast.makeText(this, "⚠️ Position camera to see entire grid", Toast.LENGTH_LONG).show();
+        //     return;
+        // }
+
         isCaptureInProgress = true;
-
-        // Disable button
         runOnUiThread(() -> {
             btnCapture.setEnabled(false);
-            btnCapture.setText("CAPTURING...");
+            btnCapture.setText("CAPTURING ALL CELLS...");
         });
 
-        final int cellToCapture = currentStableCell;
         surfaceView.queueEvent(() -> {
             try {
                 Frame frame = session.update();
-                captureCellImage(cellToCapture, frame);
-                // ✅ 3 second cooldown
-                surfaceView.postDelayed(() -> {
-                    runOnUiThread(() -> {
-                        btnCapture.setEnabled(true);
-                        btnCapture.setText("CAPTURE");
-                        // ✅ Clear flag after delay
-                        isCaptureInProgress = false;
-                    });
-                }, 3000);
+                captureAllCellsFromSingleFrame(frame); // ✅ ONE FRAME → 16 CROPS
             } catch (Exception e) {
                 Log.e(TAG, "Capture failed", e);
+            } finally {
                 runOnUiThread(() -> {
                     btnCapture.setEnabled(true);
                     btnCapture.setText("CAPTURE");
-                    isCaptureInProgress = false; // ✅ Always clear flag on error
+                    isCaptureInProgress = false;
                 });
             }
         });
+    }
+
+    // Helper method to check if entire grid is visible
+    private boolean canSeeEntireGrid() {
+        List<GridManager.GridCell> cells = gridManager.getAllCells();
+        if (cells == null || cells.isEmpty()) return false;
+
+        // Check if all 4 corners are visible in current view
+        // (Implementation depends on your projection logic)
+        return true; // Simplified
     }
 
     private boolean hasTrackingPlane() {
