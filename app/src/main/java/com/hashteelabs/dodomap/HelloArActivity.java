@@ -26,6 +26,7 @@ import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
 import android.os.Bundle;
 import android.util.Log;
+import android.util.Size;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.MotionEvent;
@@ -221,7 +222,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final float CAPTURE_DISTANCE_THRESHOLD = 1.0f; // meters from cell
     private HashMap<Integer, String> cellImagePaths = new HashMap<>();
     private boolean[] capturedCells = new boolean[GRID_ROWS * GRID_COLS];
-    private static final int DEFAULT_JPEG_QUALITY = 95; // High quality for better cropped images
+    private static final int DEFAULT_JPEG_QUALITY = 100; // Max JPEG quality for sharper crops
     private long lastCaptureCheckTime = 0;
     private static final long CAPTURE_CHECK_INTERVAL = 250;
     private Map<Integer, AreaCalculator.AreaResult> cellAreaResults = new HashMap<>();
@@ -624,38 +625,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             btnCapture.setOnClickListener(v -> toggleCaptureMode());
         }
     }
-    private void captureAllCellsFromSingleFrameUI() {
-        if (isCaptureInProgress) {
-            Toast.makeText(this, "Capture already in progress...", Toast.LENGTH_SHORT).show();
-            return;
-        }
 
-        if (!gridManager.hasAllCorners()) {
-            Toast.makeText(this, "Grid not ready", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        isCaptureInProgress = true;
-        runOnUiThread(() -> {
-            btnCapture.setEnabled(false);
-            btnCapture.setText("CAPTURING…");
-        });
-
-        surfaceView.queueEvent(() -> {
-            try {
-                Frame frame = session.update();
-                captureAllCellsFromSingleFrame(frame); // ✅ YOUR CORRECT METHOD
-            } catch (Exception e) {
-                Log.e(TAG, "Capture failed", e);
-            } finally {
-                runOnUiThread(() -> {
-                    btnCapture.setEnabled(true);
-                    btnCapture.setText("CAPTURE");
-                    isCaptureInProgress = false;
-                });
-            }
-        });
-    }
 
     private void createFloatingAnchor() {
         surfaceView.queueEvent(() -> {
@@ -995,554 +965,240 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         float px = (camPos[0] / z) * focal[0] + principal[0];
         float py = (camPos[1] / z) * focal[1] + principal[1];
 
-        if (px < 0 || px > imageWidth || py < 0 || py > imageHeight) return false;
-
         outPixel2[0] = px;
         outPixel2[1] = py;
         return true;
     }
 
-    /**
-     * Calculate a crop rectangle for this cell by projecting its 3D corners into
-     * the current camera frame and building a 2D bounding box. If projection
-     * fails (e.g. cell off-screen), we fall back to simple 4×4 tiling so that
-     * capture still works.
-     */
-    private CropRegion calculateCropRegionForCell(int cellIndex,
-                                                  GridManager.GridCell cell,
-                                                  Camera camera,
-                                                  int imageWidth,
-                                                  int imageHeight){
-        if (imageWidth <= 0 || imageHeight <= 0) {
+    private CropRegion calculateCropRegionForCell(
+            int cellIndex,
+            GridManager.GridCell cell,
+            Camera camera,
+            int imageWidth,
+            int imageHeight
+    ) {
+        if (cell == null || camera == null || imageWidth <= 0 || imageHeight <= 0) {
             return null;
         }
-        int maxIndex = GRID_ROWS * GRID_COLS - 1;
-        cellIndex = Math.max(0, Math.min(cellIndex, maxIndex));
-        // Force strict uniform tiling so every cell has the same size.
-        // Divide the image into exactly GRID_ROWS × GRID_COLS uniform cells
+
+        float minX = Float.MAX_VALUE;
+        float maxX = -Float.MAX_VALUE;
+        float minY = Float.MAX_VALUE;
+        float maxY = -Float.MAX_VALUE;
+        int valid = 0;
+
+        float[][] corners = new float[][]{
+                cell.topLeft,
+                cell.topRight,
+                cell.bottomRight,
+                cell.bottomLeft
+        };
+
+        // 🔹 LOG 1: Print 3D world coordinates of this cell
+        Log.d("ProjectionLog", String.format(
+                "Cell %d - 3D corners: TL(%.2f,%.2f,%.2f) TR(%.2f,%.2f,%.2f) BR(%.2f,%.2f,%.2f) BL(%.2f,%.2f,%.2f)",
+                cellIndex,
+                cell.topLeft[0], cell.topLeft[1], cell.topLeft[2],
+                cell.topRight[0], cell.topRight[1], cell.topRight[2],
+                cell.bottomRight[0], cell.bottomRight[1], cell.bottomRight[2],
+                cell.bottomLeft[0], cell.bottomLeft[1], cell.bottomLeft[2]
+        ));
+
+        for (int i = 0; i < corners.length; i++) {
+            float[] corner3D = corners[i];
+            if (corner3D == null) continue;
+
+            float[] px = new float[2];
+            if (!projectWorldToImage(corner3D, camera, imageWidth, imageHeight, px)) {
+                Log.d("ProjectionLog", "Cell " + cellIndex + " corner " + i + " not visible in image");
+                continue;
+            }
+
+            // 🔹 LOG 2: Print projected 2D pixel for each corner
+            Log.d("ProjectionLog", String.format(
+                    "Cell %d corner %d → pixel (%.1f, %.1f)",
+                    cellIndex, i, px[0], px[1]
+            ));
+
+            minX = Math.min(minX, px[0]);
+            maxX = Math.max(maxX, px[0]);
+            minY = Math.min(minY, px[1]);
+            maxY = Math.max(maxY, px[1]);
+            valid++;
+        }
+
+        if (valid < 1) {
+            Log.w("ProjectionLog", "Cell " + cellIndex + " has no visible corners → skipping");
+            return null;
+        }
+
+        // Base tile bounds (non-overlapping) used as a hard clamp to prevent overlap.
+        int tileW = imageWidth / GRID_COLS;
+        int tileH = imageHeight / GRID_ROWS;
         int row = cellIndex / GRID_COLS;
         int col = cellIndex % GRID_COLS;
-        int cellWidth = imageWidth / GRID_COLS;
-        int cellHeight = imageHeight / GRID_ROWS;
-        int left = col * cellWidth;
-        int top = row * cellHeight;
-        int right = (col == GRID_COLS - 1) ? imageWidth : (col + 1) * cellWidth;
-        int bottom = (row == GRID_ROWS - 1) ? imageHeight : (row + 1) * cellHeight;
-        int cropWidth = Math.max(2, right - left);
-        int cropHeight = Math.max(2, bottom - top);
-        // Ensure even dimensions for YUV420
-        if ((cropWidth & 1) == 1) cropWidth--;
-        if ((cropHeight & 1) == 1) cropHeight--;
-        cropWidth = Math.max(2, cropWidth);
-        cropHeight = Math.max(2, cropHeight);
-        Log.d("CaptureDebug", String.format(Locale.US,
-                "Cell %d uniform tile → [%d,%d,%dx%d] (row=%d,col=%d)",
-                cellIndex, left, top, cropWidth, cropHeight, row, col));
-        return new CropRegion(left, top, cropWidth, cropHeight);
+        int tileLeft = col * tileW;
+        int tileTop = row * tileH;
+        int tileRight = (col == GRID_COLS - 1) ? imageWidth : (col + 1) * tileW;
+        int tileBottom = (row == GRID_ROWS - 1) ? imageHeight : (row + 1) * tileH;
+        int targetW = tileRight - tileLeft;
+        int targetH = tileBottom - tileTop;
+
+        // Choose center: if we have projected corners, use their bbox center; else tile center.
+        float cx, cy;
+        if (valid >= 1) {
+            cx = 0.5f * (minX + maxX);
+            cy = 0.5f * (minY + maxY);
+        } else {
+            cx = tileLeft + targetW * 0.5f;
+            cy = tileTop + targetH * 0.5f;
+        }
+
+        // Initial box centered on chosen center with fixed size = tile size.
+        int left = (int) Math.floor(cx - targetW / 2f);
+        int top = (int) Math.floor(cy - targetH / 2f);
+        int right = left + targetW;
+        int bottom = top + targetH;
+
+        // Clamp to tile bounds to avoid overlap.
+        if (left < tileLeft) { right += (tileLeft - left); left = tileLeft; }
+        if (right > tileRight) { left -= (right - tileRight); right = tileRight; }
+        if (top < tileTop) { bottom += (tileTop - top); top = tileTop; }
+        if (bottom > tileBottom) { top -= (bottom - tileBottom); bottom = tileBottom; }
+
+        // Final clamp to image bounds.
+        left = Math.max(0, left);
+        top = Math.max(0, top);
+        right = Math.min(imageWidth, right);
+        bottom = Math.min(imageHeight, bottom);
+
+        int width = right - left;
+        int height = bottom - top;
+
+        // Enforce even dimensions for YUV by shrinking inside the tile if needed.
+        if ((width & 1) == 1) { width--; right = left + width; }
+        if ((height & 1) == 1) { height--; bottom = top + height; }
+        width = Math.max(2, width);
+        height = Math.max(2, height);
+
+        Log.d("ProjectionLog", String.format(
+                "✅ Cell %d → CROP: x=%d, y=%d, w=%d, h=%d (valid %d, tile [%d,%d,%d,%d])",
+                cellIndex, left, top, width, height, valid, tileLeft, tileTop, tileRight, tileBottom
+        ));
+
+        return new CropRegion(left, top, width, height);
     }
 
 
-   /* private void captureCellImage(int cellIndex, Frame frame) {
-        try {
-            if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) {
-                Log.e("capture1", "Invalid cell index: " + cellIndex);
-                return;
-            }
 
-            if (cellImagePaths.containsKey(cellIndex)) {
-                Log.d("capture2", "Cell already captured");
-                return;
-            }
+    private void captureAllCellsFromSingleFrame(Frame frame) {
+    if (!isMemorySafe()) {
+        runOnUiThread(() -> Toast.makeText(this, "❌ LOW MEMORY - Restart app", Toast.LENGTH_SHORT).show());
+        return;
+    }
 
-            // ✅ Memory check
-            if (!isMemorySafe()) {
-                runOnUiThread(() ->
-                        Toast.makeText(this, "❌ LOW MEMORY - Restart app", Toast.LENGTH_SHORT).show()
-                );
-                return;
-            }
+    long now = System.currentTimeMillis();
+    if (now - lastCaptureTime < 3000) {
+        runOnUiThread(() -> Toast.makeText(this, "Wait 3 seconds", Toast.LENGTH_SHORT).show());
+        return;
+    }
+    lastCaptureTime = now;
 
-            // ✅ Rate limit
-            long now = System.currentTimeMillis();
-            if (now - lastCaptureTime < 3000) {
-                runOnUiThread(() ->
-                        Toast.makeText(this, "Wait 3 seconds", Toast.LENGTH_SHORT).show()
-                );
-                return;
-            }
-            lastCaptureTime = now;
+    Image image = null;
+    byte[] nv21Data = null;
+    int width = 0, height = 0;
 
-            Image image = null;
-            byte[] nv21Data = null;
-            int width = 0;
-            int height = 0;
+    try {
+        image = frame.acquireCameraImage();
+        if (image.getFormat() != ImageFormat.YUV_420_888) return;
 
-            try {
-                image = frame.acquireCameraImage();
+        width = image.getWidth();
+        height = image.getHeight();
+        nv21Data = YuvConverter.imageToNV21(image);
+        if (nv21Data == null) return;
 
-                if (image.getFormat() != ImageFormat.YUV_420_888) {
-                    Log.e("capture3", "Wrong format: " + image.getFormat());
-                    return;
-                }
+    } catch (Exception e) {
+        e.printStackTrace();
+        return;
+    } finally {
+        if (image != null) image.close();
+    }
 
-                width = image.getWidth();
-                height = image.getHeight();
-                Log.d("capture4", "📸 Capturing cell " + (cellIndex + 1) + " (" + width + "x" + height + ")");
+    Camera captureCamera = frame.getCamera();
+    List<GridManager.GridCell> allCells = gridManager != null ? gridManager.getAllCells() : null;
+    CropRegion[] precomputedCrops = new CropRegion[GRID_ROWS * GRID_COLS];
 
-                nv21Data = YuvConverter.imageToNV21(image);
-                if (nv21Data == null) {
-                    Log.e("capture4", "Failed to convert image to NV21");
-                    runOnUiThread(() ->
-                            Toast.makeText(this, "Failed to read camera frame", Toast.LENGTH_SHORT).show()
-                    );
-                    return;
-                }
-            } catch (NotYetAvailableException e) {
-                runOnUiThread(() ->
-                        Toast.makeText(this, "Camera busy", Toast.LENGTH_SHORT).show()
-                );
-                return;
-            } catch (OutOfMemoryError e) {
-                Log.e(TAG, "❌ OUT OF MEMORY!", e);
-                runOnUiThread(() ->
-                        new AlertDialog.Builder(this)
-                                .setTitle("Memory Full")
-                                .setMessage("Cannot capture. Restart app.")
-                                .setPositiveButton("OK", null)
-                                .show()
-                );
-                return;
-            } catch (Exception e) {
-                Log.e(TAG, "Capture failed", e);
-                runOnUiThread(() ->
-                        Toast.makeText(this, "Capture failed: " + e.getMessage(), Toast.LENGTH_SHORT).show()
-                );
-                return;
-            } finally {
-                if (image != null) {
-                    try {
-                        image.close();
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
+    // Precompute crops
+    for (int i = 0; i < GRID_ROWS * GRID_COLS; i++) {
+        GridManager.GridCell cell = (allCells != null && i < allCells.size()) ? allCells.get(i) : null;
+        CropRegion crop = calculateCropRegionForCell(i, cell, captureCamera, width, height);
 
-            if (nv21Data == null || width <= 0 || height <= 0) {
-                Log.e(TAG, "Invalid frame data for capture");
-                return;
-            }
+        // Fallback to uniform tiling
+        if (crop == null) {
+            int row = i / GRID_COLS;
+            int col = i % GRID_COLS;
+            int cellW = width / GRID_COLS;
+            int cellH = height / GRID_ROWS;
+            int left = col * cellW;
+            int top = row * cellH;
+            int right = (col == GRID_COLS - 1) ? width : (col + 1) * cellW;
+            int bottom = (row == GRID_ROWS - 1) ? height : (row + 1) * cellH;
+            int cropW = Math.max(2, right - left);
+            int cropH = Math.max(2, bottom - top);
+            if ((cropW & 1) == 1) cropW--;
+            if ((cropH & 1) == 1) cropH--;
+            crop = new CropRegion(left, top, cropW, cropH);
+        }
+        precomputedCrops[i] = crop;
+    }
+
+    final byte[] finalNv21 = nv21Data;
+    final int finalWidth = width;
+    final int finalHeight = height;
+    final CropRegion[] finalCrops = precomputedCrops;
+
+    captureExecutor.execute(() -> {
+        for (int i = 0; i < GRID_ROWS * GRID_COLS; i++) {
+            CropRegion crop = finalCrops[i];
+            if (crop == null) continue;
 
             File imgDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "AR_Floor_Inspection");
-            if (!imgDir.exists()) {
-                imgDir.mkdirs();
-            }
+            if (!imgDir.exists()) imgDir.mkdirs();
 
-            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
-            String timestamp = dateFormat.format(new Date());
-            String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
-                    cellIndex + 1, timestamp);
+            String filename = String.format(Locale.US, "cell_%03d.jpg", i + 1);
             File outputFile = new File(imgDir, filename);
 
-            Camera captureCamera = frame.getCamera();
-
-            GridManager.GridCell cell = null;
-            if (gridManager != null) {
-                int targetRow = cellIndex / GRID_COLS;
-                int targetCol = cellIndex % GRID_COLS;
-                cell = gridManager.getCell(targetRow, targetCol);
-            }
-
-            CropRegion cropRegion = calculateCropRegionForCell(
-                    cellIndex,
-                    cell,
-                    captureCamera,
-                    image.getWidth(),
-                    image.getHeight()
-            );
-
-
-            if (cropRegion == null) {
-                int fallbackWidth = Math.max(2, (int) (width * 0.4f));
-                int fallbackHeight = Math.max(2, (int) (height * 0.4f));
-                int centerX = width / 2;
-                int centerY = height / 2;
-                int cropX = Math.max(0, centerX - fallbackWidth / 2);
-                int cropY = Math.max(0, centerY - fallbackHeight / 2);
-                cropX = Math.min(cropX, width - fallbackWidth);
-                cropY = Math.min(cropY, height - fallbackHeight);
-
-                // ensure even
-                if ((fallbackWidth & 1) == 1) fallbackWidth--;
-                if ((fallbackHeight & 1) == 1) fallbackHeight--;
-                fallbackWidth = Math.max(2, fallbackWidth);
-                fallbackHeight = Math.max(2, fallbackHeight);
-
-                cropRegion = new CropRegion(cropX, cropY, fallbackWidth, fallbackHeight);
-                Log.w("CaptureDebug", "Projected crop unavailable, using center fallback");
-            }
-
-            final byte[] finalNv21 = nv21Data;
-            final CropRegion finalCrop = cropRegion;
-            final int finalWidth = width;
-            final int finalHeight = height;
-            final int finalIndex = cellIndex;
-            final File finalFile = outputFile;
-
-            captureExecutor.execute(() -> {
-                boolean success = false;
-                try {
-                    Log.d("capture", String.format(Locale.US,
-                        "Single cell %d crop: [x=%d,y=%d,w=%d,h=%d]", finalIndex, finalCrop.x, finalCrop.y, finalCrop.width, finalCrop.height));
-
-                    success = YuvConverter.saveImageFromByteArray(
+            try {
+                boolean saved = YuvConverter.saveImageFromByteArray(
                         finalNv21,
                         finalWidth,
                         finalHeight,
-                        finalCrop.x,
-                        finalCrop.y,
-                        finalCrop.width,
-                        finalCrop.height,
-                        finalFile,
+                        crop.x,
+                        crop.y,
+                        crop.width,
+                        crop.height,
+                        outputFile,
                         DEFAULT_JPEG_QUALITY
-                    );
-                } catch (Exception e) {
-                    Log.e("capture5", "Save failed", e);
-                } finally {
-                    if (finalNv21 != null) {
-                        Arrays.fill(finalNv21, (byte) 0);
-                    }
-                }
-
-                if (success && finalFile.exists()) {
-                    Log.d("capture8", "✓ SAVED: " + finalFile.getName() +
-                            " (" + (finalFile.length() / 1024) + " KB)");
-
-                    try {
-                        maybeRotateImage(finalFile);
-                    } catch (Exception e) {
-                        Log.w("capture", "Rotation correction failed for " + finalFile.getName(), e);
-                    }
-
-                    MediaScannerConnection.scanFile(
-                            HelloArActivity.this,
-                            new String[]{finalFile.getAbsolutePath()},
-                            new String[]{"image/jpeg"},
-                            null
-                    );
-
-                    runOnUiThread(() -> {
-                        cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
-                        if (finalIndex < capturedCells.length) {
-                            capturedCells[finalIndex] = true;
-                        }
-                        if (currentWorkOrderId != null) {
-                            int cellRow = finalIndex / GRID_COLS;
-                            int cellCol = finalIndex % GRID_COLS;
-                            dbHelper.saveCapturedImage(
-                                    currentWorkOrderId,
-                                    finalIndex,
-                                    cellRow,
-                                    cellCol,
-                                    finalCrop.x,
-                                    finalCrop.y,
-                                    finalCrop.width,
-                                    finalCrop.height,
-                                    finalFile.getAbsolutePath(),
-                                    "pending"
-                            );
-                            Log.d("DB_SAVE", "Saved to DB → WO: " + currentWorkOrderId + " | Cell: " + finalIndex);
-                        }
-
-                        updateWorkOrderDisplay();
-                        try {
-                            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                            if (vib != null) vib.vibrate(150);
-                        } catch (Exception ignored) {
-                        }
-
-                        int total = cellImagePaths.size();
-                        int remaining = (GRID_ROWS * GRID_COLS) - total;
-                        Toast.makeText(HelloArActivity.this,
-                                String.format("✓ Cell %d saved • %d more to go",
-                                        finalIndex + 1, remaining),
-                                Toast.LENGTH_SHORT).show();
-                        uploadImageToServer(finalFile, finalIndex);
-                        updateVisitedCountDisplay();
-                        updateViewButtonVisibility();
-
-                        if (gridViewVisible && gridView2D != null) {
-                            gridView2D.invalidate();
-                        }
-                    });
-                } else {
-                    Log.e(TAG, "❌ Save failed");
-                    runOnUiThread(() ->
-                            Toast.makeText(HelloArActivity.this,
-                                    "❌ Failed to save cell " + (finalIndex + 1),
-                                    Toast.LENGTH_SHORT).show()
-                    );
-                }
-
-                System.gc();
-            });
-
-        } catch (Exception e) {
-            Log.e("capture9", "Capture failed", e);
-        }
-    }*/
-
-    
-    private void captureAllCellsFromSingleFrame(Frame frame) {
-        // Memory + rate limit checks (same logic as captureCellImage, but once)
-        if (!isMemorySafe()) {
-            runOnUiThread(() ->
-                    Toast.makeText(this, "❌ LOW MEMORY - Restart app", Toast.LENGTH_SHORT).show()
-            );
-            return;
-        }
-
-        long now = System.currentTimeMillis();
-        if (now - lastCaptureTime < 3000) {
-            runOnUiThread(() ->
-                    Toast.makeText(this, "Wait 3 seconds", Toast.LENGTH_SHORT).show()
-            );
-            return;
-        }
-        lastCaptureTime = now;
-
-        Image image = null;
-        byte[] nv21Data = null;
-        int width = 0;
-        int height = 0;
-
-        try {
-            image = frame.acquireCameraImage();
-            if (image.getFormat() != ImageFormat.YUV_420_888) {
-                Log.e("capture3", "Wrong format: " + image.getFormat());
-                return;
-            }
-
-            width = image.getWidth();
-            height = image.getHeight();
-            Log.d("capture_all", "📸 Capturing ALL cells from single frame (" + width + "x" + height + ")");
-
-            nv21Data = YuvConverter.imageToNV21(image);
-            if (nv21Data == null) {
-                Log.e("capture_all", "Failed to convert image to NV21");
-                runOnUiThread(() ->
-                        Toast.makeText(this, "Failed to read camera frame", Toast.LENGTH_SHORT).show()
                 );
-                return;
-            }
-        } catch (NotYetAvailableException e) {
-            runOnUiThread(() ->
-                    Toast.makeText(this, "Camera busy", Toast.LENGTH_SHORT).show()
-            );
-            return;
-        } catch (OutOfMemoryError e) {
-            Log.e(TAG, "❌ OUT OF MEMORY!", e);
-            runOnUiThread(() ->
-                    new AlertDialog.Builder(this)
-                            .setTitle("Memory Full")
-                            .setMessage("Cannot capture. Restart app.")
-                            .setPositiveButton("OK", null)
-                            .show()
-            );
-            return;
-        } catch (Exception e) {
-            Log.e(TAG, "Capture-all failed", e);
-            runOnUiThread(() ->
-                    Toast.makeText(this, "Capture failed: " + e.getMessage(), Toast.LENGTH_SHORT).show()
-            );
-            return;
-        } finally {
-            if (image != null) {
-                try {
-                    image.close();
-                } catch (Exception ignored) {
-                }
+                if (!saved) continue;
+
+                MediaScannerConnection.scanFile(
+                        HelloArActivity.this,
+                        new String[]{outputFile.getAbsolutePath()},
+                        new String[]{"image/jpeg"},
+                        null
+                );
+
+                Log.d("capture_all", "Saved cell " + i + ": " + outputFile.getAbsolutePath());
+            } catch (Exception e) {
+                Log.e("capture_all", "Failed to save cell " + i, e);
             }
         }
+        Arrays.fill(finalNv21, (byte) 0);
+        System.gc();
+    });
+}
 
-        if (nv21Data == null || width <= 0 || height <= 0) {
-            Log.e(TAG, "Invalid frame data for capture-all");
-            return;
-        }
-
-        // Precompute crop regions on the GL thread using the live camera
-        Camera captureCamera = frame.getCamera();
-        List<GridManager.GridCell> allCells = gridManager != null ? gridManager.getAllCells() : null;
-        CropRegion[] precomputedCrops = new CropRegion[GRID_ROWS * GRID_COLS];
-        
-        for (int cellIndex = 0; cellIndex < GRID_ROWS * GRID_COLS; cellIndex++) {
-            GridManager.GridCell cell = (allCells != null && cellIndex < allCells.size()) ? allCells.get(cellIndex) : null;
-            CropRegion crop = calculateCropRegionForCell(
-                    cellIndex,
-                    cell,
-                    captureCamera,
-                    width,
-                    height
-            );
-            
-            // Ensure we always have a valid crop (fallback to uniform tiling if null)
-            if (crop == null) {
-                Log.w(TAG, "Crop null for cell " + cellIndex + ", using uniform fallback");
-                int row = cellIndex / GRID_COLS;
-                int col = cellIndex % GRID_COLS;
-                int cellW = width / GRID_COLS;
-                int cellH = height / GRID_ROWS;
-                int left = col * cellW;
-                int top = row * cellH;
-                int right = (col == GRID_COLS - 1) ? width : (col + 1) * cellW;
-                int bottom = (row == GRID_ROWS - 1) ? height : (row + 1) * cellH;
-                int cropW = Math.max(2, right - left);
-                int cropH = Math.max(2, bottom - top);
-                if ((cropW & 1) == 1) cropW--;
-                if ((cropH & 1) == 1) cropH--;
-                crop = new CropRegion(left, top, cropW, cropH);
-            }
-            precomputedCrops[cellIndex] = crop;
-        }
-
-        final byte[] finalNv21 = nv21Data;
-        final int finalWidth = width;
-        final int finalHeight = height;
-        final CropRegion[] finalCrops = precomputedCrops;
-
-        captureExecutor.execute(() -> {
-            try {
-                // One shared frame, loop through all cells (always capture all 16)
-                for (int cellIndex = 0; cellIndex < GRID_ROWS * GRID_COLS; cellIndex++) {
-                    if (cellIndex < 0 || cellIndex >= GRID_ROWS * GRID_COLS) continue;
-
-                    CropRegion cropRegion = (finalCrops != null && cellIndex < finalCrops.length)
-                            ? finalCrops[cellIndex]
-                            : null;
-
-                    if (cropRegion == null) {
-                        Log.w("capture_all", "No crop for cell " + cellIndex + ", skipping");
-                        continue;
-                    }
-
-                    int cropX = cropRegion.x;
-                    int cropY = cropRegion.y;
-                    int cropWidth = cropRegion.width;
-                    int cropHeight = cropRegion.height;
-
-                    // Create output file per cell
-                    File imgDir = new File(
-                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-                            "AR_Floor_Inspection"
-                    );
-                    if (!imgDir.exists()) {
-                        imgDir.mkdirs();
-                    }
-                    SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
-                    String timestamp = dateFormat.format(new Date());
-                    String filename = String.format(Locale.US, "cell_%03d_%s.jpg",
-                            cellIndex + 1, timestamp);
-                    File outputFile = new File(imgDir, filename);
-
-                    boolean success;
-                    try {
-                        // Log exact crop region for debugging
-                        Log.d("capture_all", String.format(Locale.US,
-                                "Cell %d crop: [x=%d,y=%d,w=%d,h=%d]", cellIndex, cropX, cropY, cropWidth, cropHeight));
-
-                        // Use configured JPEG quality for cropped images
-                        success = YuvConverter.saveImageFromByteArray(
-                                finalNv21,
-                                finalWidth,
-                                finalHeight,
-                                cropX,
-                                cropY,
-                                cropWidth,
-                                cropHeight,
-                                outputFile,
-                                DEFAULT_JPEG_QUALITY
-                        );
-                    } catch (Exception e) {
-                        Log.e("capture_all", "Save failed for cell " + cellIndex, e);
-                        continue;
-                    }
-
-                    if (!success || !outputFile.exists()) {
-                        Log.e("capture_all", "❌ Save failed for cell " + cellIndex);
-                        continue;
-                    }
-
-                    int finalIndex = cellIndex;
-                    File finalFile = outputFile;
-                    CropRegion finalCrop = cropRegion;
-
-                    Log.d("capture_all", "✓ SAVED cell " + finalIndex + ": " + finalFile.getName() +
-                            " (" + (finalFile.length() / 1024) + " KB)");
-
-                    // Rotate saved image to match device/display rotation if needed
-                    try {
-                        maybeRotateImage(finalFile);
-                    } catch (Exception e) {
-                        Log.w("capture_all", "Rotation correction failed for " + finalFile.getName(), e);
-                    }
-
-                    MediaScannerConnection.scanFile(
-                            HelloArActivity.this,
-                            new String[]{finalFile.getAbsolutePath()},
-                            new String[]{"image/jpeg"},
-                            null
-                    );
-
-                    runOnUiThread(() -> {
-                        cellImagePaths.put(finalIndex, finalFile.getAbsolutePath());
-                        if (finalIndex < capturedCells.length) {
-                            capturedCells[finalIndex] = true;
-                        }
-                        if (currentWorkOrderId != null) {
-                            int cellRow = finalIndex / GRID_COLS;
-                            int cellCol = finalIndex % GRID_COLS;
-                            dbHelper.saveCapturedImage(
-                                    currentWorkOrderId,
-                                    finalIndex,
-                                    cellRow,
-                                    cellCol,
-                                    finalCrop.x,
-                                    finalCrop.y,
-                                    finalCrop.width,
-                                    finalCrop.height,
-                                    finalFile.getAbsolutePath(),
-                                    "pending"
-                            );
-                            Log.d("DB_SAVE", "Saved to DB → WO: " + currentWorkOrderId + " | Cell: " + finalIndex);
-                        }
-
-                        updateWorkOrderDisplay();
-                        try {
-                            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                            if (vib != null) vib.vibrate(150);
-                        } catch (Exception ignored) {
-                        }
-
-                        int total = cellImagePaths.size();
-                        int remaining = (GRID_ROWS * GRID_COLS) - total;
-                        Toast.makeText(HelloArActivity.this,
-                                String.format("✓ Captured %d cells • %d more to go", total, remaining),
-                                Toast.LENGTH_SHORT).show();
-                        uploadImageToServer(finalFile, finalIndex);
-                        updateVisitedCountDisplay();
-                        updateViewButtonVisibility();
-
-                        if (gridViewVisible && gridView2D != null) {
-                            gridView2D.invalidate();
-                        }
-                    });
-                }
-            } finally {
-                // Explicit cleanup of shared buffer
-                Arrays.fill(finalNv21, (byte) 0);
-                System.gc();
-            }
-        });
-    }
     // Add this method inside HelloArActivity class
     /**
      * Rotate saved JPEG to match device/display rotation if necessary.
@@ -3585,6 +3241,31 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void configureSession() {
+        if (session == null) return;
+
+        // Prefer the highest-resolution back camera config to improve crop quality.
+        try {
+            CameraConfigFilter filter = new CameraConfigFilter(session)
+                    .setFacingDirection(CameraConfig.FacingDirection.BACK);
+            List<CameraConfig> configs = session.getSupportedCameraConfigs(filter);
+            CameraConfig best = null;
+            int bestPixels = 0;
+            for (CameraConfig cfg : configs) {
+                Size sz = cfg.getImageSize();
+                int pixels = sz.getWidth() * sz.getHeight();
+                if (pixels > bestPixels) {
+                    bestPixels = pixels;
+                    best = cfg;
+                }
+            }
+            if (best != null) {
+                session.setCameraConfig(best);
+                Log.d(TAG, "Using camera config " + best.getImageSize().getWidth() + "x" + best.getImageSize().getHeight());
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to set highest-res camera config, using default", e);
+        }
+
         Config config = session.getConfig();
         config.setLightEstimationMode(Config.LightEstimationMode.ENVIRONMENTAL_HDR);
 
@@ -4116,8 +3797,4 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
     }
 }
-// ============================================================================
-// ALSO UPDATE YOUR initialize2DGridView() METHOD
-// Find this method in HelloArActivity and update it
-// ============================================================================
 
