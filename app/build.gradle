@@ -1,6 +1,6 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
-
+apply plugin: 'com.google.gms.google-services'
 android {
     namespace "com.hashteelabs.dodomap"
     compileSdkVersion 34
@@ -54,5 +54,23 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.8.20"
 
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // Firebase BOM & Firestore
+    //implementation platform('com.google.firebase:firebase-bom:33.1.2')
+    //implementation 'com.google.firebase:firebase-firestore'
+    //implementation 'com.google.firebase:firebase-firestore:24.9.1'
+// Firebase
+    implementation platform('com.google.firebase:firebase-bom:33.1.2')
+    implementation 'com.google.firebase:firebase-firestore'
+    implementation 'com.google.firebase:firebase-auth:23.0.0'
+    // Google Play Services - Location (for FusedLocationProviderClient, LocationServices, etc.)
+    implementation 'com.google.android.gms:play-services-location:21.3.0'
+
+// AndroidX core & lifecycle (for CancellationTokenSource, Tasks, etc.)
+    implementation 'androidx.core:core:1.12.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime:2.7.0'
+
+// Optional but recommended: Tasks API (already included in core, but explicit helps tooling)
+    implementation 'com.google.android.gms:play-services-tasks:18.1.0'
 
 }

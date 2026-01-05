@@ -31,4 +31,9 @@
     <item>Enable Instant Placement</item>
   </string-array>
 
+  <!-- VPS availability dialog strings -->
+  <string name="vps_unavailable_title">VPS Unavailable</string>
+  <string name="vps_unavailable_message">VPS (Street View) coverage is not available at your current location. Continue anyway?</string>
+  <string name="continue_button">Continue</string>
+
 </resources>

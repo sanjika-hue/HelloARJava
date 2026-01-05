@@ -203,6 +203,19 @@ public class CornerManager {
     }
 
     /**
+     * Replace anchor at the specified corner index with a new Anchor (e.g., hosted anchor)
+     * @param index corner index (0..3)
+     * @param anchor new anchor to replace with
+     * @return true if replaced, false if index invalid
+     */
+    public boolean replaceCornerAnchor(int index, Anchor anchor) {
+        if (index < 0 || index >= corners.size()) return false;
+        Trackable t = corners.get(index).getTrackable();
+        corners.set(index, new WrappedAnchor(anchor, t));
+        return true;
+    }
+
+    /**
      * Clear all corners
      */
     public void clear() {

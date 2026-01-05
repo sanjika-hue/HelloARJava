@@ -356,13 +356,43 @@
             android:layout_height="56dp"
             android:layout_weight="1"
             android:layout_marginEnd="8dp"
-            android:background="#FF9800"
+            android:background="#2196F3"
             android:elevation="4dp"
             android:text="VIEW"
             android:textColor="#FFFFFF"
             android:textSize="16sp"
             android:textStyle="bold"
             android:visibility="gone" />
+
+        <!-- Host Anchors Button -->
+        <Button
+            android:id="@+id/btnHostAnchors"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#FF9800"
+            android:elevation="4dp"
+            android:text="HOST"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+        <!-- Resolve Anchors Button -->
+        <Button
+            android:id="@+id/btnResolveAnchors"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#607D8B"
+            android:elevation="4dp"
+            android:text="RESOLVE"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
 
         <!-- Capture Button -->
         <Button
@@ -392,6 +422,32 @@
             android:textSize="16sp"
             android:textStyle="bold"
             android:visibility="gone" />
+        <Button
+            android:id="@+id/btnSaveCloudAnchor"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#673AB7"
+            android:elevation="4dp"
+            android:text="SAVE ANCHOR"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/btnLoadCloudAnchors"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:background="#673AB7"
+            android:elevation="4dp"
+            android:text="LOAD ANCHORS"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
     </LinearLayout>
 
 </RelativeLayout>

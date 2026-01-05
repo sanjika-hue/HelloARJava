@@ -15,11 +15,12 @@ public class DatabaseHelper extends SQLiteOpenHelper {
 
     private static final String TAG = "DatabaseHelper";
     private static final String DATABASE_NAME = "inspection.db";
-    private static final int DATABASE_VERSION = 2;
+    private static final int DATABASE_VERSION = 3;
 
     // Tables
     private static final String TABLE_WORK_ORDERS = "work_orders";
     private static final String TABLE_CAPTURES = "captures";
+    private static final String TABLE_ANCHORS = "anchors";
 
     // Work Orders Table Columns
     private static final String COL_WO_ID = "work_order_id";
@@ -41,6 +42,13 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     private static final String COL_CROP_Y = "crop_y";
     private static final String COL_CROP_WIDTH = "crop_width";
     private static final String COL_CROP_HEIGHT = "crop_height";
+
+    // Anchors Table Columns
+    private static final String COL_ANCHOR_ID = "id";
+    private static final String COL_ANCHOR_WO_FK = "work_order_id";
+    private static final String COL_CORNER_INDEX = "corner_index";
+    private static final String COL_CLOUD_ANCHOR_ID = "cloud_anchor_id";
+    private static final String COL_CREATED_AT_ANCHOR = "created_at";
 
     public DatabaseHelper(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -72,8 +80,18 @@ public class DatabaseHelper extends SQLiteOpenHelper {
                 COL_CAPTURED_AT + " DATETIME DEFAULT CURRENT_TIMESTAMP," +
                 "FOREIGN KEY(" + COL_WO_FK + ") REFERENCES " + TABLE_WORK_ORDERS + "(" + COL_WO_ID + "))";
 
+        // Create Anchors Table to persist Cloud Anchor IDs associated with work orders
+        String createAnchorsTable = "CREATE TABLE " + TABLE_ANCHORS + " (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                COL_ANCHOR_WO_FK + " TEXT," +
+                COL_CORNER_INDEX + " INTEGER," +
+                COL_CLOUD_ANCHOR_ID + " TEXT," +
+                COL_CREATED_AT_ANCHOR + " DATETIME DEFAULT CURRENT_TIMESTAMP," +
+                "FOREIGN KEY(" + COL_ANCHOR_WO_FK + ") REFERENCES " + TABLE_WORK_ORDERS + "(" + COL_WO_ID + "))";
+
         db.execSQL(createWorkOrdersTable);
         db.execSQL(createCapturesTable);
+        db.execSQL(createAnchorsTable);
 
         Log.d(TAG, "Database tables created");
     }
@@ -81,6 +99,7 @@ public class DatabaseHelper extends SQLiteOpenHelper {
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         db.execSQL("DROP TABLE IF EXISTS " + TABLE_CAPTURES);
+        db.execSQL("DROP TABLE IF EXISTS " + TABLE_ANCHORS);
         db.execSQL("DROP TABLE IF EXISTS " + TABLE_WORK_ORDERS);
         onCreate(db);
     }
@@ -220,5 +239,54 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         public String imagePath;
         public String qualityStatus;
         public String capturedAt;
+    }
+
+    // Data class for stored anchors (cloud anchor metadata)
+    public static class AnchorRecord {
+        public int id;
+        public int cornerIndex;
+        public String cloudAnchorId;
+        public String createdAt;
+    }
+
+    // Save a cloud anchor id for a work order + corner index
+    public void saveAnchor(String workOrderId, int cornerIndex, String cloudAnchorId) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put(COL_ANCHOR_WO_FK, workOrderId);
+        values.put(COL_CORNER_INDEX, cornerIndex);
+        values.put(COL_CLOUD_ANCHOR_ID, cloudAnchorId);
+
+        long result = db.insert(TABLE_ANCHORS, null, values);
+        if (result != -1) {
+            Log.d(TAG, "Anchor saved for WO " + workOrderId + ": corner " + cornerIndex + " -> " + cloudAnchorId);
+        } else {
+            Log.w(TAG, "Failed to save anchor for WO " + workOrderId + " corner " + cornerIndex);
+        }
+    }
+
+    // Retrieve anchors for a work order
+    public List<AnchorRecord> getAnchorsForWorkOrder(String workOrderId) {
+        List<AnchorRecord> anchors = new ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+
+        Cursor cursor = db.query(TABLE_ANCHORS, null,
+                COL_ANCHOR_WO_FK + "=?",
+                new String[]{workOrderId},
+                null, null, null);
+
+        if (cursor.moveToFirst()) {
+            do {
+                AnchorRecord rec = new AnchorRecord();
+                rec.id = cursor.getInt(cursor.getColumnIndexOrThrow(COL_ANCHOR_ID));
+                rec.cornerIndex = cursor.getInt(cursor.getColumnIndexOrThrow(COL_CORNER_INDEX));
+                rec.cloudAnchorId = cursor.getString(cursor.getColumnIndexOrThrow(COL_CLOUD_ANCHOR_ID));
+                rec.createdAt = cursor.getString(cursor.getColumnIndexOrThrow(COL_CREATED_AT_ANCHOR));
+                anchors.add(rec);
+            } while (cursor.moveToNext());
+        }
+
+        cursor.close();
+        return anchors;
     }
 }

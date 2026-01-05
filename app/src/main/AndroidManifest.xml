@@ -13,12 +13,13 @@ package="com.hashteelabs.dodomap"
   <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
   <!-- Hardware features -->
   <uses-feature android:name="android.hardware.camera" android:required="true"/>
   <uses-feature android:name="android.hardware.camera.ar" android:required="true"/>
   <uses-feature android:glEsVersion="0x00030000" android:required="true"/>
+
 
   <application
       android:appCategory="game"
@@ -30,6 +31,23 @@ package="com.hashteelabs.dodomap"
       android:largeHeap="true"
       android:hardwareAccelerated="true"
       tools:ignore="GoogleAppIndexingWarning">
+    <meta-data
+        android:name="com.google.ar.core"
+        android:value="required" />
+
+    <!-- Cloud Anchor API Key for Persistent Anchors -->
+    <meta-data
+        android:name="com.google.android.ar.API_KEY"
+        android:value="AIzaSyCuq632v3OtXfEe1Lu_LqCIILOUKzYmF_s" />
+
+
+
+    <!-- Require ARCore -->
+    <meta-data
+        android:name="com.google.ar.core.minApkVersion"
+        android:value="required" />
+
+
 
     <activity
         android:name=".HelloArActivity"
@@ -49,8 +67,7 @@ package="com.hashteelabs.dodomap"
         android:screenOrientation="locked"
         android:theme="@style/Theme.AppCompat.NoActionBar" />
 
-    <!-- ARCore requirement -->
-    <meta-data android:name="com.google.ar.core" android:value="required"/>
+
   </application>
 
 </manifest>
