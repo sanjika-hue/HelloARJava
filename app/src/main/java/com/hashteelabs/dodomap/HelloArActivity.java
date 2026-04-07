@@ -14,10 +14,9 @@ import java.util.Locale;
 import java.util.Map;
 import com.google.firebase.auth.FirebaseAuth;
 import java.io.ByteArrayOutputStream;
-import android.Manifest;
-import android.content.pm.PackageManager;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import android.net.Uri;
 
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
@@ -67,7 +66,6 @@ import com.google.ar.core.*;
 import com.google.ar.core.exceptions.*;
 
 import com.hashteelabs.dodomap.common.helpers.CameraPermissionHelper;
-import com.hashteelabs.dodomap.common.helpers.LocationPermissionHelper;
 import com.hashteelabs.dodomap.common.helpers.DepthSettings;
 import com.hashteelabs.dodomap.common.helpers.DisplayRotationHelper;
 import com.hashteelabs.dodomap.common.helpers.FullScreenHelper;
@@ -93,6 +91,10 @@ import com.hashteelabs.dodomap.common.samplerender.Mesh;
 import com.hashteelabs.dodomap.DatabaseHelper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.RandomAccessFile;
+import java.util.LinkedHashMap;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -130,8 +132,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             0.282095f, -0.325735f, 0.325735f, -0.325735f, 0.273137f,
             -0.273137f, 0.078848f, -0.273137f, 0.136569f,
     };
-
-
     private static final float Z_NEAR = 0.1f;
     private static final float Z_FAR = 100f;
     private static final int CUBEMAP_RESOLUTION = 16;
@@ -165,9 +165,18 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private YuvToRgbConverter yuvConverter;
     // UI Elements
     private Button btnDone;
+    private Button btnRecordVideo;
+    private Button btnUploadVideo;
+    private Button btn3DRender;
+    private boolean isRecording = false;
+    private File currentVideoFile = null;
+    private static final int REQUEST_PICK_VIDEO = 1002;
+    private static final String VIDEO_UPLOAD_ENDPOINT = "https://vtdjepkjlodxix-8000.proxy.runpod.net/process";
+    private static final String VIDEO_STATUS_ENDPOINT = "https://vtdjepkjlodxix-8000.proxy.runpod.net/status/";
+    private static final String VIDEO_DOWNLOAD_ENDPOINT = "https://vtdjepkjlodxix-8000.proxy.runpod.net/download/";
     private TextView tvInstructions;
     private TextView tvDistance;
-    private final List<Anchor> hostedAnchors = new ArrayList<>();
+    private final List<Map<String, Object>> hostedAnchors = new ArrayList<>();
     // Rendering components
     private PlaneRenderer planeRenderer;
     private BackgroundRenderer backgroundRenderer;
@@ -292,7 +301,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private TextView tvWorkOrderInfo;
     // Collect Cloud Anchor IDs before saving
     private final List<String> hostedAnchorIds = new ArrayList<>();
-    private static final int LOCATION_PERMISSION_CODE = 101;
 
     // Sync visited state with captured images so 2D view reflects captures.
     private void syncVisitedWithCaptured() {
@@ -306,8 +314,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // Update your onCreate() method - ADD THIS SECTION:
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+            // Video record/upload buttons removed
         super.onCreate(savedInstanceState);
-        requestLocationPermissionIfNeeded();
         setContentView(com.hashteelabs.dodomap.R.layout.activity_main);
         tvWorkOrderInfo = findViewById(com.hashteelabs.dodomap.R.id.tvWorkOrderInfo);
         // Initialize database helper
@@ -394,7 +402,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         btnCapture.setText("CAPTURE ALL");
         btnCapture.setBackgroundColor(Color.parseColor("#4CAF50"));
 
+
         btnViewCaptured.setVisibility(View.GONE);
+
+        btnRecordVideo = findViewById(R.id.btnRecordVideo);
+        btnUploadVideo = findViewById(R.id.btnUploadVideo);
+        btn3DRender = findViewById(R.id.btn3DRender);
+        btn3DRender.setVisibility(View.VISIBLE);
+        btnRecordVideo.setOnClickListener(v -> onRecordVideoClicked());
+        btnUploadVideo.setOnClickListener(v -> onUploadVideoClicked());
+        btn3DRender.setOnClickListener(v -> show3DRenderDialog());
 
         // 5️⃣ Set listeners
         btnInspectFloor.setOnClickListener(v -> selectInspectionMode(InspectionMode.FLOOR));
@@ -1464,7 +1481,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         .build();
 
                 Request request = new Request.Builder()
-                        .url("http://10.75.89.33:8000/upload/")
+                        .url("https://vtdjepkjlodxix-8000.proxy.runpod.net/upload/")
                         .post(body)
                         .build();
 
@@ -1622,7 +1639,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 try {
                     OkHttpClient client = new OkHttpClient();
                     Request request = new Request.Builder()
-                            .url("http://10.75.89.33:8000/status/" + imageId)  // UPDATE YOUR IP
+                            .url("https://vtdjepkjlodxix-8000.proxy.runpod.net/status/" + imageId)
                             .build();
 
                     Response response = client.newCall(request).execute();
@@ -2516,6 +2533,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
 
+
     private void handleTapForCornerPlacement(Frame frame, Camera camera) {
         final HelloArActivity self = this;
 
@@ -2574,7 +2592,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     self.createCornerConnectionLines();
                     if (self.cornerManager.hasAllCorners()) {
                         self.createFloorOverlay();
-                        self.saveAnchorsToFirebase();
                     }
                 });
             }
@@ -2608,7 +2625,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         hostedAnchorIds.add(anchorId);
                         self.runOnUiThread(() -> {
                             Toast.makeText(self, "Cloud Anchor hosted: " + anchorId, Toast.LENGTH_SHORT).show();
-                            //  saveAnchorsToFirebase();
+                            saveAnchorsToFirebase();
                         });
                         return;
                     } else if (state.isError()) {
@@ -2630,8 +2647,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             break;
         }
     }
-
-
 
     private double[] getCurrentGps() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
@@ -2678,60 +2693,32 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         builder.setNegativeButton("Cancel", (dialog, which) -> dialog.dismiss());
         builder.show();
     }
-
     private void saveAnchorsToFirebase() {
-        Log.d("CANCHOR", "Saving anchors to Firebase (local data only)");
+        Log.d("CANCHOR", " Entered saveAnchorsToFirebase()");
 
-        if (floorNumber < 0 || cornerManager.getCornerCount() != 4) {
-            Log.w("CANCHOR", "Floor not set or not all corners placed");
+        if (floorNumber < 0 || hostedAnchorIds.isEmpty()) {
+            Log.w("CANCHOR", "⚠️ Floor number not set or no anchors to save");
             return;
         }
 
         FirebaseFirestore db = FirebaseFirestore.getInstance();
+
         Map<String, Object> data = new HashMap<>();
         data.put("floor_number", floorNumber);
-        data.put("timestamp", FieldValue.serverTimestamp());
+        data.put("anchor_ids", hostedAnchorIds);
 
-        // ✅ Save Geospatial Pose (for floor detection)
-        Earth earth = session.getEarth();
-        if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
-            GeospatialPose pose = earth.getCameraGeospatialPose();
-            data.put("latitude", pose.getLatitude());
-            data.put("longitude", pose.getLongitude());
-            data.put("altitude", pose.getAltitude());
-        }
-
-        // ✅ Save ABSOLUTE WORLD POSITIONS of all 4 corners
-        float[] orderedCoords = cornerManager.getOrderedCorners();
-        if (orderedCoords != null && orderedCoords.length == 12) {
-            List<Map<String, Double>> anchorWorldPositions = new ArrayList<>();
-            for (int i = 0; i < 4; i++) {
-                Map<String, Double> pos = new HashMap<>();
-                pos.put("x", (double) orderedCoords[i * 3]);
-                pos.put("y", (double) orderedCoords[i * 3 + 1]);
-                pos.put("z", (double) orderedCoords[i * 3 + 2]);
-                anchorWorldPositions.add(pos);
-            }
-            data.put("anchorWorldPositions", anchorWorldPositions);
-        }
-
-        // ✅ Save NOW — no Cloud Anchor needed
         db.collection("cloudAnchors")
                 .document("floor_" + floorNumber)
                 .set(data)
                 .addOnSuccessListener(aVoid -> {
-                    Log.d("CANCHOR", "✅ Local anchor data saved for floor " + floorNumber);
-                    Toast.makeText(this, "Saved floor data (no Cloud Anchor needed!)", Toast.LENGTH_SHORT).show();
+                    Log.d("CANCHOR", "✅ Anchors saved to Firestore for floor " + floorNumber);
+                    Toast.makeText(this, "Saved anchors for floor " + floorNumber, Toast.LENGTH_SHORT).show();
                 })
                 .addOnFailureListener(e -> {
-                    Log.e("CANCHOR", "❌ Failed to save to Firestore", e);
-                    Toast.makeText(this, "Failed to save floor data", Toast.LENGTH_SHORT).show();
+                    Log.e("CANCHOR", "❌ Failed to save anchors to Firestore", e);
+                    Toast.makeText(this, "Failed to save anchors", Toast.LENGTH_SHORT).show();
                 });
     }
-
-
-
-
 
     private void showFloorDropdownForResolve() {
         FirebaseFirestore db = FirebaseFirestore.getInstance();
@@ -2771,55 +2758,24 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 .document("floor_" + floorNumber)
                 .get()
                 .addOnSuccessListener(doc -> {
-                    if (!doc.exists()) {
-                        Toast.makeText(this, "No data for floor " + floorNumber, Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-
-                    // ✅ 1. Verify you're on the correct floor using altitude
-                    Double savedAlt = doc.getDouble("altitude");
-                    Earth earth = session.getEarth();
-                    if (earth == null || savedAlt == null || earth.getTrackingState() != TrackingState.TRACKING) {
-                        Toast.makeText(this, "Wait for geospatial tracking...", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    double currentAlt = earth.getCameraGeospatialPose().getAltitude();
-                    if (Math.abs(currentAlt - savedAlt) > 2.0) {
-                        Toast.makeText(this, "You're not on Floor " + floorNumber, Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-
-                    // ✅ 2. Load saved world positions
-                    List<Map<String, Double>> positions = (List<Map<String, Double>>) doc.get("anchorWorldPositions");
-                    if (positions == null || positions.size() != 4) {
-                        Toast.makeText(this, "Missing anchor data", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-
-                    // ✅ 3. Recreate anchors from absolute world coordinates
-                    surfaceView.queueEvent(() -> {
-                        cornerManager = new CornerManager(); // reset
-                        for (Map<String, Double> pos : positions) {
-                            float x = pos.get("x").floatValue();
-                            float y = pos.get("y").floatValue();
-                            float z = pos.get("z").floatValue();
-                            Pose pose = new Pose(new float[]{x, y, z}, new float[]{0f, 0f, 0f, 1f});
-                            Anchor anchor = session.createAnchor(pose); // 🔑 LOCAL anchor at real-world spot
-                            cornerManager.addCorner(anchor, null);
+                    if (doc.exists()) {
+                        List<String> ids = (List<String>) doc.get("anchor_ids"); // ⚠️ ensure field name matches Firestore
+                        if (ids != null) {
+                            Log.d("RESOLVE", "📦 Fetched " + ids.size() + " anchor IDs for floor " + floorNumber);
+                            for (String id : ids) {
+                                Log.d("RESOLVE", "➡️ Attempting to resolve anchor ID: " + id);
+                                Anchor resolved = session.resolveCloudAnchor(id);
+                                monitorResolvedAnchor(resolved, id);
+                            }
+                        } else {
+                            Log.w("RESOLVE", "⚠️ No anchor_ids field found in Firestore doc for floor " + floorNumber);
                         }
-                        createCornerConnectionLines();
-                        if (cornerManager.hasAllCorners()) {
-                            createFloorOverlay();
-                        }
-                        runOnUiThread(() -> {
-                            Toast.makeText(this, "✅ Anchors restored on Floor " + floorNumber, Toast.LENGTH_LONG).show();
-                        });
-                    });
+                    } else {
+                        Log.w("RESOLVE", "⚠️ No Firestore document found for floor_" + floorNumber);
+                        Toast.makeText(this, "No anchors saved for floor " + floorNumber, Toast.LENGTH_SHORT).show();
+                    }
                 })
-                .addOnFailureListener(e -> {
-                    Log.e(TAG, "Failed to fetch floor data", e);
-                    Toast.makeText(this, "Failed to load data", Toast.LENGTH_SHORT).show();
-                });
+                .addOnFailureListener(e -> Log.e("RESOLVE", "❌ Failed to fetch anchors for floor " + floorNumber, e));
     }
 
     /**
@@ -2840,18 +2796,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Log.e(TAG, "❌ Resolve failed for " + id + " state=" + state);
         }
     }
-
-    private void requestLocationPermissionIfNeeded() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                    this,
-                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
-                    LOCATION_PERMISSION_CODE
-            );
-        }
-    }
-
 
     private void createCornerConnectionLines() {
         int cornerCount = cornerManager.getCornerCount();
@@ -3000,14 +2944,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     return;
                 }
 
-                // Request location permission for Geospatial features
-                requestLocationPermissionIfNeeded();
-
                 session = new Session(this);
-                Config config = session.getConfig();
-                config.setGeospatialMode(Config.GeospatialMode.ENABLED);
-                session.configure(config);
-                Log.d(TAG, "✅ Geospatial mode enabled: " + config.getGeospatialMode());
             } catch (UnavailableArcoreNotInstalledException
                      | UnavailableUserDeclinedInstallationException e) {
                 message = "Please install ARCore";
@@ -3072,30 +3009,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
     }
 
-
     @Override
-    public void onRequestPermissionsResult(
-            int requestCode,
-            String[] permissions,
-            int[] results) {
-
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-
-        // 🔹 CAMERA PERMISSION (existing)
         if (!CameraPermissionHelper.hasCameraPermission(this)) {
-            Toast.makeText(
-                    this,
-                    "Camera permission is needed to run this application",
-                    Toast.LENGTH_LONG
-            ).show();
-
+            Toast.makeText(this, "Camera permission is needed to run this application",
+                    Toast.LENGTH_LONG).show();
             if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
                 CameraPermissionHelper.launchPermissionSettings(this);
             }
             finish();
-            return;
         }
-
     }
 
     @Override
@@ -3268,28 +3192,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         Camera camera = frame.getCamera();
-        // === EARTH COORDINATES ===
-        Earth earth = session.getEarth();
-        if (earth == null) {
-            Log.d("GPOSE", " Earth object is null (not available yet)");
-            return;
-        }
-
-        if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
-            GeospatialPose pose = earth.getCameraGeospatialPose();
-
-            double lat = pose.getLatitude();
-            double lon = pose.getLongitude();
-            double alt = pose.getAltitude();
-            double heading = pose.getHeading();
-
-            Log.d("GPOSE", "Earth Pose: lat=" + lat +
-                    " lon=" + lon +
-                    " alt=" + alt +
-                    " heading=" + heading +
-                    " floor=" + floorNumber);
-        }
-
         camera.getProjectionMatrix(projectionMatrix, 0, Z_NEAR, Z_FAR);
         camera.getViewMatrix(viewMatrix, 0);
         camera.getPose().getTranslation(lastCameraPosition, 0);
@@ -4230,6 +4132,386 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
             return super.onTouchEvent(event);
         }
+    }
+
+    // ===== VIDEO RECORDING & UPLOAD =====
+
+    private void show3DRenderDialog() {
+        String[] options = {"Record Video", "Upload Video"};
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("3D Render")
+                .setItems(options, (dialog, which) -> {
+                    if (which == 0) {
+                        onRecordVideoClicked();
+                    } else {
+                        onUploadVideoClicked();
+                    }
+                })
+                .show();
+    }
+
+    private void onRecordVideoClicked() {
+        if (session == null) {
+            Toast.makeText(this, "AR session not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (isRecording) {
+            stopArVideoRecording();
+        } else {
+            startArVideoRecording();
+        }
+    }
+
+    private void startArVideoRecording() {
+        try {
+            File videoDir = new File(getExternalFilesDir(null), "AR_Videos");
+            if (!videoDir.exists()) videoDir.mkdirs();
+
+            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            currentVideoFile = new File(videoDir, "ar_video_" + timestamp + ".mp4");
+
+            com.google.ar.core.RecordingConfig recordingConfig =
+                    new com.google.ar.core.RecordingConfig(session)
+                            .setMp4DatasetUri(Uri.fromFile(currentVideoFile))
+                            .setAutoStopOnPause(false);
+
+            session.startRecording(recordingConfig);
+            isRecording = true;
+
+            runOnUiThread(() -> {
+                btnRecordVideo.setVisibility(View.VISIBLE);
+                btnRecordVideo.setText("STOP RECORDING");
+                btnRecordVideo.setBackgroundColor(Color.parseColor("#F44336"));
+                btn3DRender.setVisibility(View.GONE);
+                Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start AR recording", e);
+            runOnUiThread(() -> Toast.makeText(this,
+                    "Could not start recording: " + e.getMessage(), Toast.LENGTH_LONG).show());
+        }
+    }
+
+    private void stopArVideoRecording() {
+        try {
+            session.stopRecording();
+            isRecording = false;
+
+            runOnUiThread(() -> {
+                btnRecordVideo.setVisibility(View.GONE);
+                btn3DRender.setVisibility(View.VISIBLE);
+
+                if (currentVideoFile != null && currentVideoFile.exists()) {
+                    new AlertDialog.Builder(this)
+                            .setTitle("Recording Saved")
+                            .setMessage("Video saved!\n\nGenerate 3D model from this recording now?")
+                            .setPositiveButton("Generate 3D", (d, w) ->
+                                    uploadVideoToServer(Uri.fromFile(currentVideoFile)))
+                            .setNegativeButton("Later", null)
+                            .show();
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to stop AR recording", e);
+            runOnUiThread(() -> Toast.makeText(this,
+                    "Stop recording failed: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+        }
+    }
+
+    private void onUploadVideoClicked() {
+        // Check if a downloaded PLY already exists to offer "View last 3D"
+        File plyDir = new File(getExternalFilesDir(null), "PLY_Models");
+        File[] plyFiles = plyDir.exists() ? plyDir.listFiles((d, n) -> n.endsWith(".ply")) : null;
+        boolean hasExisting3D = plyFiles != null && plyFiles.length > 0;
+
+        List<String> options = new ArrayList<>();
+        options.add("Generate 3D from recorded video");
+        options.add("Generate 3D from gallery video");
+        if (hasExisting3D) options.add("View last 3D model");
+
+        new AlertDialog.Builder(this)
+                .setTitle("3D Model Generation")
+                .setItems(options.toArray(new String[0]), (dialog, which) -> {
+                    if (which == 0) {
+                        // Upload recorded video
+                        if (currentVideoFile != null && currentVideoFile.exists()) {
+                            uploadVideoToServer(Uri.fromFile(currentVideoFile));
+                        } else {
+                            Toast.makeText(this,
+                                    "No recorded video. Tap RECORD VIDEO first.",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    } else if (which == 1) {
+                        // Pick from gallery
+                        pickVideoFromGallery();
+                    } else {
+                        // View last downloaded 3D model
+                        File latest = plyFiles[0];
+                        for (File f : plyFiles) {
+                            if (f.lastModified() > latest.lastModified()) latest = f;
+                        }
+                        Intent intent = new Intent(this, PlyViewerActivity.class);
+                        intent.putExtra(PlyViewerActivity.EXTRA_PLY_PATH, latest.getAbsolutePath());
+                        startActivity(intent);
+                    }
+                })
+                .show();
+    }
+
+    private void pickVideoFromGallery() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("video/*");
+        startActivityForResult(intent, REQUEST_PICK_VIDEO);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PICK_VIDEO && resultCode == RESULT_OK && data != null) {
+            Uri videoUri = data.getData();
+            if (videoUri != null) {
+                uploadVideoToServer(videoUri);
+            }
+        }
+    }
+
+    // ===== PLY POLLING, DOWNLOAD & PARSING =====
+
+    private void pollAndDownloadResult(String jobId) {
+        new Thread(() -> {
+            int maxAttempts = 180; // 15 min max (180 × 5s)
+            runOnUiThread(() -> Toast.makeText(this,
+                    "3D processing started. You'll be notified when ready.",
+                    Toast.LENGTH_LONG).show());
+
+            for (int attempt = 0; attempt < maxAttempts; attempt++) {
+                try {
+                    Thread.sleep(5000);
+                    OkHttpClient client = new OkHttpClient();
+                    Request req = new Request.Builder()
+                            .url(VIDEO_STATUS_ENDPOINT + jobId)
+                            .build();
+                    try (Response resp = client.newCall(req).execute()) {
+                        String body = resp.body() != null ? resp.body().string() : "{}";
+                        String status = new JSONObject(body).optString("status", "");
+                        Log.d(TAG, "3D job " + jobId + " status: " + status);
+
+                        if (status.equals("done")) {
+                            downloadAndRenderPly(jobId);
+                            return;
+                        } else if (status.startsWith("error")) {
+                            runOnUiThread(() -> Toast.makeText(this,
+                                    "3D generation failed: " + status, Toast.LENGTH_LONG).show());
+                            return;
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Poll error: " + e.getMessage());
+                }
+            }
+            runOnUiThread(() -> Toast.makeText(this,
+                    "3D processing timed out.", Toast.LENGTH_LONG).show());
+        }).start();
+    }
+
+    private void downloadAndRenderPly(String jobId) {
+        try {
+            runOnUiThread(() -> Toast.makeText(this,
+                    "3D model ready! Downloading...", Toast.LENGTH_SHORT).show());
+
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .readTimeout(600, TimeUnit.SECONDS)
+                    .connectTimeout(30, TimeUnit.SECONDS)
+                    .build();
+            Request req = new Request.Builder()
+                    .url(VIDEO_DOWNLOAD_ENDPOINT + jobId)
+                    .build();
+
+            try (Response resp = client.newCall(req).execute()) {
+                if (!resp.isSuccessful()) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "Download failed: " + resp.code(), Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                File plyDir = new File(getExternalFilesDir(null), "PLY_Models");
+                plyDir.mkdirs();
+                File plyFile = new File(plyDir, jobId + ".ply");
+
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Downloading 3D model (may take a minute)...", Toast.LENGTH_LONG).show());
+
+                try (InputStream is = resp.body().byteStream();
+                     OutputStream os = new FileOutputStream(plyFile)) {
+                    byte[] buf = new byte[65536];
+                    int len;
+                    while ((len = is.read(buf)) > 0) os.write(buf, 0, len);
+                }
+                Log.d(TAG, "PLY saved: " + plyFile.getAbsolutePath());
+
+                // Open the 3D viewer in a separate screen
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Opening 3D viewer...", Toast.LENGTH_SHORT).show();
+                    Intent intent = new Intent(this, PlyViewerActivity.class);
+                    intent.putExtra(PlyViewerActivity.EXTRA_PLY_PATH, plyFile.getAbsolutePath());
+                    startActivity(intent);
+                });
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "PLY download error", e);
+            runOnUiThread(() -> Toast.makeText(this,
+                    "Failed to download 3D: " + e.getMessage(), Toast.LENGTH_LONG).show());
+        }
+    }
+
+    private void uploadVideoToServer(Uri videoUri) {
+        new Thread(() -> {
+            File tempFile = null;
+            try {
+                // Step 1: Check server is reachable first
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Checking server connection...", Toast.LENGTH_SHORT).show());
+                try {
+                    OkHttpClient pingClient = new OkHttpClient.Builder()
+                            .connectTimeout(30, TimeUnit.SECONDS)
+                            .readTimeout(30, TimeUnit.SECONDS)
+                            .build();
+                    Request pingReq = new Request.Builder()
+                            .url("https://vtdjepkjlodxix-8000.proxy.runpod.net/")
+                            .build();
+                    try (Response pingResp = pingClient.newCall(pingReq).execute()) {
+                        if (!pingResp.isSuccessful()) throw new Exception("Server returned " + pingResp.code());
+                    }
+                } catch (Exception pingEx) {
+                    runOnUiThread(() -> new AlertDialog.Builder(this)
+                            .setTitle("Server Unreachable")
+                            .setMessage(
+                                "Cannot connect to the 3D server.\n\n" +
+                                "Please check:\n" +
+                                "• RunPod server is running\n" +
+                                "• Run: uvicorn server:app --host 0.0.0.0 --port 8000\n\n" +
+                                "Error: " + pingEx.getMessage())
+                            .setPositiveButton("OK", null)
+                            .show());
+                    return;
+                }
+
+                // Step 2: Copy video to temp file
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Preparing video...", Toast.LENGTH_SHORT).show());
+
+                tempFile = File.createTempFile("upload_video_", ".mp4", getCacheDir());
+                try (InputStream is = getContentResolver().openInputStream(videoUri);
+                     OutputStream os = new FileOutputStream(tempFile)) {
+                    if (is == null) throw new Exception("Cannot read video file. Try picking again.");
+                    byte[] buf = new byte[8192];
+                    int len;
+                    while ((len = is.read(buf)) > 0) os.write(buf, 0, len);
+                }
+
+                long fileSizeMB = tempFile.length() / (1024 * 1024);
+                Log.d(TAG, "Video temp file: " + fileSizeMB + " MB");
+
+                // Step 3: Upload + wait for PLY (synchronous server — no polling needed)
+                OkHttpClient client = new OkHttpClient.Builder()
+                        .connectTimeout(30, TimeUnit.SECONDS)
+                        .writeTimeout(600, TimeUnit.SECONDS)
+                        .readTimeout(700, TimeUnit.SECONDS) // server timeout is 600s
+                        .build();
+
+                RequestBody body = new MultipartBody.Builder()
+                        .setType(MultipartBody.FORM)
+                        .addFormDataPart("file", "video.mp4",
+                                RequestBody.create(tempFile, MediaType.parse("video/mp4")))
+                        .build();
+
+                Request request = new Request.Builder()
+                        .url(VIDEO_UPLOAD_ENDPOINT)
+                        .post(body)
+                        .build();
+
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Uploading & processing 3D... (may take 5-10 min, keep app open)",
+                        Toast.LENGTH_LONG).show());
+
+                try (Response response = client.newCall(request).execute()) {
+                    if (!response.isSuccessful()) {
+                        String err = response.body() != null ? response.body().string() : "";
+                        runOnUiThread(() -> Toast.makeText(this,
+                                "Upload failed: " + response.code() + " " + err,
+                                Toast.LENGTH_LONG).show());
+                        return;
+                    }
+                    String respBody = response.body() != null ? response.body().string() : "{}";
+                    String jobId = new JSONObject(respBody).optString("job_id", "");
+                    if (jobId.isEmpty()) {
+                        runOnUiThread(() -> Toast.makeText(this, "No job ID returned", Toast.LENGTH_LONG).show());
+                        return;
+                    }
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "Video uploaded! Processing 3D... keep app open",
+                            Toast.LENGTH_LONG).show());
+                    // Poll status
+                    OkHttpClient pollClient = new OkHttpClient.Builder()
+                            .readTimeout(30, TimeUnit.SECONDS).build();
+                    for (int i = 0; i < 180; i++) {
+                        Thread.sleep(5000);
+                        Request statusReq = new Request.Builder()
+                                .url(VIDEO_STATUS_ENDPOINT + jobId).build();
+                        try (Response sr = pollClient.newCall(statusReq).execute()) {
+                            String s = new JSONObject(sr.body().string()).optString("status", "");
+                            Log.d(TAG, "Status: " + s);
+                            if (s.equals("done")) {
+                                // Download PLY
+                                runOnUiThread(() -> Toast.makeText(this, "3D ready! Downloading...", Toast.LENGTH_SHORT).show());
+                                OkHttpClient dlClient = new OkHttpClient.Builder()
+                                        .readTimeout(300, TimeUnit.SECONDS).build();
+                                Request dlReq = new Request.Builder()
+                                        .url(VIDEO_DOWNLOAD_ENDPOINT + jobId).build();
+                                try (Response dr = dlClient.newCall(dlReq).execute()) {
+                                    File plyDir = new File(getExternalFilesDir(null), "PLY_Models");
+                                    plyDir.mkdirs();
+                                    File plyFile = new File(plyDir, jobId + ".ply");
+                                    try (InputStream is = dr.body().byteStream();
+                                         OutputStream os = new FileOutputStream(plyFile)) {
+                                        byte[] buf = new byte[65536];
+                                        int len;
+                                        while ((len = is.read(buf)) > 0) os.write(buf, 0, len);
+                                    }
+                                    if (plyFile.length() > 1000) {
+                                        runOnUiThread(() -> {
+                                            Toast.makeText(this, "Opening 3D viewer...", Toast.LENGTH_SHORT).show();
+                                            Intent intent = new Intent(this, PlyViewerActivity.class);
+                                            intent.putExtra(PlyViewerActivity.EXTRA_PLY_PATH, plyFile.getAbsolutePath());
+                                            startActivity(intent);
+                                        });
+                                    }
+                                }
+                                return;
+                            } else if (s.startsWith("error") || s.equals("failed")) {
+                                runOnUiThread(() -> Toast.makeText(this, "3D failed: " + s, Toast.LENGTH_LONG).show());
+                                return;
+                            }
+                        }
+                    }
+                    runOnUiThread(() -> Toast.makeText(this, "Timed out waiting for 3D", Toast.LENGTH_LONG).show());
+                }
+
+            } catch (Exception e) {
+                Log.e(TAG, "Video upload failed", e);
+                final String msg;
+                if (e.getMessage() != null && e.getMessage().contains("Unable to resolve host")) {
+                    msg = "Cannot reach server. Check your internet and make sure RunPod is running.";
+                } else if (e.getMessage() != null && e.getMessage().contains("Cannot read video")) {
+                    msg = e.getMessage();
+                } else {
+                    msg = "Upload failed: " + e.getMessage();
+                }
+                runOnUiThread(() -> Toast.makeText(this, msg, Toast.LENGTH_LONG).show());
+            } finally {
+                if (tempFile != null) tempFile.delete();
+            }
+        }).start();
     }
 }
 

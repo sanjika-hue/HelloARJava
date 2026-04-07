@@ -393,7 +393,12 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
-
+        <Button
+            android:id="@+id/btnScanQr"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="SCAN QR"
+            android:visibility="gone" /> 
         <!-- Capture Button -->
         <Button
             android:id="@+id/btnCapture"
@@ -420,6 +425,45 @@
             android:text="DONE"
             android:textColor="#FFFFFF"
             android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/btnRecordVideo"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#E91E63"
+            android:elevation="4dp"
+            android:text="RECORD VIDEO"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/btnUploadVideo"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#3F51B5"
+            android:elevation="4dp"
+            android:text="UPLOAD VIDEO"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+        <Button
+            android:id="@+id/btn3DRender"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#FF6F00"
+            android:elevation="4dp"
+            android:text="3D RENDER"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
             android:textStyle="bold"
             android:visibility="gone" />
         <Button

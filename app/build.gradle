@@ -72,5 +72,6 @@ dependencies {
 
 // Optional but recommended: Tasks API (already included in core, but explicit helps tooling)
     implementation 'com.google.android.gms:play-services-tasks:18.1.0'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
 
 }

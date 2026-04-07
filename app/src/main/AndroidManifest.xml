@@ -7,9 +7,11 @@ package="com.hashteelabs.dodomap"
 
   <!-- Permissions -->
   <uses-permission android:name="android.permission.CAMERA"/>
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+  <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
   <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -35,10 +37,11 @@ package="com.hashteelabs.dodomap"
         android:name="com.google.ar.core"
         android:value="required" />
 
-    <!-- Cloud Anchor API Key for Persistent Anchors -->
+    <!-- Cloud Anchor API Key for Persistent Anchors AIzaSyCuq632v3OtXfEe1Lu_LqCIILOUKzYmF_s -->
     <meta-data
         android:name="com.google.android.ar.API_KEY"
         android:value="AIzaSyCuq632v3OtXfEe1Lu_LqCIILOUKzYmF_s" />
+
 
 
 
@@ -63,6 +66,12 @@ package="com.hashteelabs.dodomap"
 
     <activity
         android:name=".GridNavigationActivity"
+        android:configChanges="orientation|screenSize"
+        android:screenOrientation="locked"
+        android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+    <activity
+        android:name=".PlyViewerActivity"
         android:configChanges="orientation|screenSize"
         android:screenOrientation="locked"
         android:theme="@style/Theme.AppCompat.NoActionBar" />
